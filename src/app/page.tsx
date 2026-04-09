@@ -2,15 +2,19 @@
 
 import React, { useEffect, useState } from 'react';
 import { 
-  BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip as RechartsTooltip, ResponsiveContainer, LineChart, Line, Legend, AreaChart, Area, PieChart, Pie, Cell
+  BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip as RechartsTooltip, ResponsiveContainer, AreaChart, Area, PieChart, Pie, Cell, Legend
 } from 'recharts';
-import { Scissors, Users, DollarSign, TrendingUp, Calendar, Loader2, Info, Crown, CreditCard } from 'lucide-react';
+import { Scissors, Users, DollarSign, TrendingUp, Loader2, Info, Crown, CreditCard, Calendar } from 'lucide-react';
 import Papa from 'papaparse';
 
 const SHEET_URL = "https://docs.google.com/spreadsheets/d/1GmYrrCJWdc2kLGNxEdTJSsdZ-6H8Y_md9GsK5svSjlo/export?format=csv&gid=545750877";
 
 export default function Dashboard() {
   const [loading, setLoading] = useState(true);
+  const [allData, setAllData] = useState<any[]>([]);
+  const [startDate, setStartDate] = useState('');
+  const [endDate, setEndDate] = useState('');
+  
   const [metrics, setMetrics] = useState({
     revenue: 0,
     subscriptionsRevenue: 0,
@@ -30,7 +34,7 @@ export default function Dashboard() {
           header: true,
           skipEmptyLines: true,
           complete: (results) => {
-            processData(results.data);
+            setAllData(results.data);
             setLoading(false);
           },
           error: (error: Error) => {
@@ -45,18 +49,45 @@ export default function Dashboard() {
       });
   }, []);
 
-  const processData = (data: any[]) => {
-    if (!data || data.length === 0) return;
+  useEffect(() => {
+    if (allData.length > 0) {
+      processData(allData);
+    }
+  }, [allData, startDate, endDate]);
 
+  const processData = (data: any[]) => {
     let totalRevenue = 0;
     let subsRevenue = 0;
     let singleRevenue = 0;
+    let appointmentsCount = 0;
 
     const namesSet = new Set();
     const servicesMap: Record<string, number> = {};
     const revenueByDayMap: Record<string, { assinaturas: number, avulsos: number }> = {};
 
     data.forEach(row => {
+      // Extrair e validar data
+      const dataRaw = row['DATA / AGENDAMENTO:'];
+      let isoDate = '';
+      
+      if (dataRaw && dataRaw.trim() !== '') {
+        const parts = dataRaw.split(' ')[0].split('/');
+        if (parts.length === 3) {
+          const d = parts[0].padStart(2, '0');
+          const m = parts[1].padStart(2, '0');
+          const y = parts[2];
+          isoDate = `${y}-${m}-${d}`;
+        }
+      }
+
+      // Regra de Filtro de Data
+      if (startDate && isoDate && isoDate < startDate) return;
+      if (endDate && isoDate && isoDate > endDate) return;
+      // Se não há data no dado mas temos filtros ativos, pular
+      if ((startDate || endDate) && !isoDate) return;
+
+      appointmentsCount++;
+
       // Parse Valor
       const valorRaw = row['VALOR:'] || '0';
       const valorClean = valorRaw.toString().replace(/[R$\s]/g, '').replace('.', '').replace(',', '.');
@@ -87,18 +118,16 @@ export default function Dashboard() {
         });
       }
 
-      // Receita por Dia
-      const dataRaw = row['DATA / AGENDAMENTO:'];
-      if (dataRaw && dataRaw.trim() !== '') {
-        const dateKey = dataRaw.split(' ')[0] || dataRaw;
-        if (!revenueByDayMap[dateKey]) {
-          revenueByDayMap[dateKey] = { assinaturas: 0, avulsos: 0 };
-        }
-        if (isSubscription) {
-          revenueByDayMap[dateKey].assinaturas += valor;
-        } else {
-          revenueByDayMap[dateKey].avulsos += valor;
-        }
+      // Agrupar Receitas pelo Dia (padrão ISO para garantir ordem no gráfico)
+      const dateKey = isoDate || dataRaw?.split(' ')[0] || 'Sem Data';
+      
+      if (!revenueByDayMap[dateKey]) {
+        revenueByDayMap[dateKey] = { assinaturas: 0, avulsos: 0 };
+      }
+      if (isSubscription) {
+        revenueByDayMap[dateKey].assinaturas += valor;
+      } else {
+        revenueByDayMap[dateKey].avulsos += valor;
       }
     });
 
@@ -106,7 +135,7 @@ export default function Dashboard() {
       revenue: totalRevenue,
       subscriptionsRevenue: subsRevenue,
       singleServicesRevenue: singleRevenue,
-      appointments: data.length,
+      appointments: appointmentsCount,
       uniqueClients: namesSet.size
     });
 
@@ -117,14 +146,18 @@ export default function Dashboard() {
       .slice(0, 5);
     setServiceData(parsedServices);
 
-    // Receita por Dia
+    // Receita por Dia ordenado e mapeado para exibição (DD/MM)
     const parsedRevenueByDay = Object.entries(revenueByDayMap)
-      .map(([name, vals]) => ({ 
-        name, 
-        'Assinaturas': vals.assinaturas, 
-        'Avulsos': vals.avulsos 
-      }))
-      .sort((a, b) => a.name.localeCompare(b.name));
+      .sort(([keyA], [keyB]) => keyA.localeCompare(keyB))
+      .map(([isoDateKey, vals]) => {
+        const parts = isoDateKey.split('-');
+        const displayName = parts.length === 3 ? `${parts[2]}/${parts[1]}` : isoDateKey;
+        return { 
+          name: displayName, 
+          'Assinaturas': vals.assinaturas, 
+          'Avulsos': vals.avulsos 
+        };
+      });
     setRevenueData(parsedRevenueByDay);
 
     // Dados de Pizza para Assinatura vs Avulso
@@ -175,30 +208,67 @@ export default function Dashboard() {
       <main className="max-w-7xl mx-auto py-10 px-4 sm:px-6 lg:px-8 w-full flex-grow">
         
         {/* Header Section */}
-        <div className="flex flex-col md:flex-row md:items-end justify-between mb-10 gap-6">
+        <div className="flex flex-col xl:flex-row xl:items-end justify-between mb-10 gap-6">
           <div>
             <h2 className="text-3xl font-bold text-white tracking-tight">Desempenho Geral</h2>
             <p className="text-zinc-400 mt-2">Visão consolidada em tempo real da Barbearia Costeleta.</p>
           </div>
-          <button onClick={() => window.location.reload()} className="group relative inline-flex h-11 items-center justify-center overflow-hidden rounded-lg bg-amber-500 px-6 font-medium text-black transition-all hover:bg-amber-400">
-            <TrendingUp className="w-4 h-4 mr-2" />
-            Sincronizar Integrador
-            <div className="absolute inset-0 flex h-full w-full justify-center [transform:skew(-12deg)_translateX(-100%)] group-hover:duration-1000 group-hover:[transform:skew(-12deg)_translateX(100%)]">
-              <div className="relative h-full w-8 bg-white/20" />
+          
+          <div className="flex flex-col sm:flex-row items-end sm:items-center gap-4">
+            {/* Filtro de Datas */}
+            <div className="flex items-center bg-white/5 border border-white/10 rounded-xl p-1 backdrop-blur-xl h-11">
+              <div className="pl-3 pr-2 flex items-center text-zinc-400">
+                <Calendar className="w-4 h-4" />
+              </div>
+              <input 
+                type="date" 
+                value={startDate} 
+                onChange={(e) => setStartDate(e.target.value)}
+                className="bg-transparent text-sm text-zinc-300 px-2 py-1 outline-none [color-scheme:dark] rounded-lg transition-colors hover:bg-white/5 focus:bg-white/10 border border-transparent focus:border-amber-500/50"
+              />
+              <span className="text-zinc-500 px-2 text-xs font-medium">até</span>
+              <input 
+                type="date" 
+                value={endDate} 
+                onChange={(e) => setEndDate(e.target.value)}
+                className="bg-transparent text-sm text-zinc-300 px-2 py-1 outline-none [color-scheme:dark] rounded-lg transition-colors hover:bg-white/5 focus:bg-white/10 border border-transparent focus:border-amber-500/50"
+              />
+              {(startDate || endDate) && (
+                <button 
+                  onClick={() => { setStartDate(''); setEndDate(''); }}
+                  className="ml-2 mr-1 px-2 py-1 bg-red-500/10 hover:bg-red-500/20 text-red-400 text-xs rounded-md transition-colors font-medium border border-red-500/10"
+                >
+                  Limpar
+                </button>
+              )}
             </div>
-          </button>
+
+            <button onClick={() => window.location.reload()} className="group relative inline-flex h-11 items-center justify-center overflow-hidden rounded-xl bg-amber-500 px-6 font-medium text-black transition-all hover:bg-amber-400 shrink-0 shadow-lg shadow-amber-500/20">
+              <TrendingUp className="w-4 h-4 mr-2" />
+              Atualizar Origem
+              <div className="absolute inset-0 flex h-full w-full justify-center [transform:skew(-12deg)_translateX(-100%)] group-hover:duration-1000 group-hover:[transform:skew(-12deg)_translateX(100%)]">
+                <div className="relative h-full w-8 bg-white/20" />
+              </div>
+            </button>
+          </div>
         </div>
 
-        {metrics.appointments === 0 && (
+        {allData.length === 0 && (
           <div className="bg-amber-500/10 border border-amber-500/20 text-amber-200 rounded-xl p-5 mb-10 flex items-start gap-4 backdrop-blur-sm">
             <div className="p-2 bg-amber-500/20 rounded-lg shrink-0">
               <Info className="w-6 h-6 text-amber-400" />
             </div>
             <div>
-              <h4 className="text-lg font-semibold text-amber-400 mb-1">A interface está pronta, mas não há dados.</h4>
-              <p className="text-amber-200/80 leading-relaxed">Sua planilha Google consta atualmente como vazia. Quando novos agendamentos forem adicionados lá, este painel renderizará os belos gráficos e estatísticas de assinaturas de forma instantânea.</p>
+              <h4 className="text-lg font-semibold text-amber-400 mb-1">A interface está pronta, mas a planilha tem zero resultados.</h4>
+              <p className="text-amber-200/80 leading-relaxed">Sua planilha Google consta atualmente como vazia. Quando novos agendamentos forem adicionados lá, os relatórios aparecerão.</p>
             </div>
           </div>
+        )}
+
+        {allData.length > 0 && metrics.appointments === 0 && (startDate || endDate) && (
+           <div className="bg-zinc-800/50 border border-zinc-700 text-zinc-300 rounded-xl p-5 mb-10 flex items-center justify-center backdrop-blur-sm">
+             <p>Nenhum agendamento encontrado no período selecionado.</p>
+           </div>
         )}
 
         {/* Top KPIs Row */}
@@ -223,7 +293,7 @@ export default function Dashboard() {
           {/* Receita Assinaturas */}
           <div className="relative overflow-hidden bg-white/5 border border-white/10 rounded-2xl p-6 backdrop-blur-xl group hover:bg-white/[0.07] transition-colors">
             <div className="flex justify-between items-start mb-4">
-              <h3 className="text-zinc-400 font-medium text-sm tracking-wide uppercase">Assinaturas (Novas/Ativas)</h3>
+              <h3 className="text-zinc-400 font-medium text-sm tracking-wide uppercase">Assinaturas (Ativas)</h3>
               <div className="bg-amber-500/10 p-2 rounded-lg text-amber-400 group-hover:scale-110 transition-transform">
                 <Crown className="w-5 h-5" />
               </div>
@@ -235,7 +305,7 @@ export default function Dashboard() {
               <span className="text-amber-500 mr-2 flex items-center">
                 {metrics.revenue > 0 ? ((metrics.subscriptionsRevenue / metrics.revenue) * 100).toFixed(0) : 0}%
               </span>
-              da receita total
+              da receita filtrada
             </p>
           </div>
 
@@ -254,7 +324,7 @@ export default function Dashboard() {
               <span className="text-blue-400 mr-2 flex items-center">
                 {metrics.revenue > 0 ? ((metrics.singleServicesRevenue / metrics.revenue) * 100).toFixed(0) : 0}%
               </span>
-               da receita total
+               da receita filtrada
             </p>
           </div>
 
@@ -286,7 +356,7 @@ export default function Dashboard() {
                 <TrendingUp className="w-5 h-5 text-amber-500" />
                 Desempenho de Receita: Assinaturas vs Avulsos
               </h3>
-              <p className="text-sm text-zinc-400">Evolução diária dos tipos de faturamento.</p>
+              <p className="text-sm text-zinc-400">Evolução diária dos tipos de faturamento filtrados.</p>
             </div>
             
             {revenueData.length > 0 ? (
@@ -318,7 +388,7 @@ export default function Dashboard() {
               </div>
             ) : (
               <div className="flex-1 flex items-center justify-center text-zinc-600 text-sm bg-white/[0.02] rounded-xl border border-dashed border-white/5">
-                Nenhuma venda registrada
+                Sem dados no período
               </div>
             )}
           </div>
