@@ -9,6 +9,14 @@ import Papa from 'papaparse';
 
 const SHEET_URL = "https://docs.google.com/spreadsheets/d/1GmYrrCJWdc2kLGNxEdTJSsdZ-6H8Y_md9GsK5svSjlo/export?format=csv&gid=545750877";
 
+interface ClientRecord {
+  name: string;
+  totalSpent: number;
+  appointments: number;
+  firstDateISO: string;
+  firstDateDisplay: string;
+}
+
 export default function Dashboard() {
   const [loading, setLoading] = useState(true);
   const [allData, setAllData] = useState<any[]>([]);
@@ -25,6 +33,7 @@ export default function Dashboard() {
   const [revenueData, setRevenueData] = useState<any[]>([]);
   const [serviceData, setServiceData] = useState<any[]>([]);
   const [subscriptionVsSingleData, setSubscriptionVsSingleData] = useState<any[]>([]);
+  const [clientRanking, setClientRanking] = useState<ClientRecord[]>([]);
 
   useEffect(() => {
     fetch(SHEET_URL)
@@ -64,6 +73,7 @@ export default function Dashboard() {
     const namesSet = new Set();
     const servicesMap: Record<string, number> = {};
     const revenueByDayMap: Record<string, { assinaturas: number, avulsos: number }> = {};
+    const clientsMap = new Map<string, ClientRecord>();
 
     data.forEach(row => {
       // Extrair e validar data
@@ -103,10 +113,32 @@ export default function Dashboard() {
         singleRevenue += valor;
       }
 
-      // Clientes únicos
-      const nome = row['NOME:'];
-      if (nome && nome.trim() !== '') {
-        namesSet.add(nome.trim().toLowerCase());
+      // Clientes únicos e Ranking
+      const nomeRow = row['NOME:'];
+      if (nomeRow && nomeRow.trim() !== '') {
+        const nomeKey = nomeRow.trim().toLowerCase();
+        const nomeDisplay = nomeRow.trim();
+        namesSet.add(nomeKey);
+
+        const existing = clientsMap.get(nomeKey);
+        const currentSpent = existing ? existing.totalSpent : 0;
+        const currentAppts = existing ? existing.appointments : 0;
+        let currentFirstISO = existing ? existing.firstDateISO : isoDate;
+        let currentFirstDisplay = existing ? existing.firstDateDisplay : dataRaw;
+
+        // Atualiza a primeira data se a atual for mais antiga
+        if (isoDate && existing && existing.firstDateISO !== '9999-99-99' && isoDate < existing.firstDateISO) {
+          currentFirstISO = isoDate;
+          currentFirstDisplay = dataRaw;
+        }
+
+        clientsMap.set(nomeKey, {
+          name: existing?.name || nomeDisplay, 
+          totalSpent: currentSpent + valor,
+          appointments: currentAppts + 1,
+          firstDateISO: currentFirstISO || '9999-99-99',
+          firstDateDisplay: currentFirstDisplay || 'Sem Data'
+        });
       }
 
       // Serviços
@@ -165,6 +197,11 @@ export default function Dashboard() {
       { name: 'Receita de Assinaturas', value: subsRevenue, color: '#f59e0b' },
       { name: 'Serviços Avulsos', value: singleRevenue, color: '#3b82f6' }
     ]);
+
+    // Format Client Ranking
+    const rankingArray = Array.from(clientsMap.values())
+      .sort((a, b) => b.totalSpent - a.totalSpent); // Sort by highest spend
+    setClientRanking(rankingArray);
   };
 
   if (loading) {
@@ -441,42 +478,98 @@ export default function Dashboard() {
           </div>
         </div>
 
-        {/* Bottom Bar: Serviços */}
-        <div className="bg-white/5 border border-white/10 rounded-2xl p-6 backdrop-blur-xl flex flex-col h-[400px]">
-          <div className="mb-6">
-            <h3 className="text-lg font-bold text-white flex items-center gap-2">
-              <Scissors className="w-5 h-5 text-amber-500" />
-              Raking de Serviços Populares
-            </h3>
-            <p className="text-sm text-zinc-400">Demanda em volume de corte, barba e demais pacotes.</p>
-          </div>
-          
-          {serviceData.length > 0 ? (
-            <div className="flex-1 w-full mt-4">
-              <ResponsiveContainer width="100%" height="100%">
-                <BarChart data={serviceData} margin={{ top: 5, right: 30, left: 20, bottom: 5 }} layout="vertical">
-                  <CartesianGrid strokeDasharray="3 3" horizontal={true} vertical={false} stroke="#ffffff10" />
-                  <XAxis type="number" axisLine={false} tickLine={false} tick={{fill: '#a1a1aa', fontSize: 13}} />
-                  <YAxis type="category" dataKey="name" axisLine={false} tickLine={false} tick={{fill: '#e4e4e7', fontSize: 13, fontWeight: 500}} width={120} />
-                  <RechartsTooltip 
-                    cursor={{fill: '#ffffff08'}}
-                    contentStyle={{ backgroundColor: '#18181b', border: '1px solid rgba(255,255,255,0.1)', borderRadius: '12px', color: '#fff' }}
-                  />
-                  <Bar dataKey="count" name="Trabalhos Realizados" radius={[0, 6, 6, 0]} barSize={28}>
-                    {
-                      serviceData.map((entry, index) => (
-                        <Cell key={`cell-${index}`} fill={index === 0 ? '#f59e0b' : '#fcd34d'} opacity={1 - (index * 0.15)} />
-                      ))
-                    }
-                  </Bar>
-                </BarChart>
-              </ResponsiveContainer>
+        {/* Bottom Area: Rankings */}
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-10">
+          {/* Serviços */}
+          <div className="bg-white/5 border border-white/10 rounded-2xl p-6 backdrop-blur-xl flex flex-col h-[400px]">
+            <div className="mb-6">
+              <h3 className="text-lg font-bold text-white flex items-center gap-2">
+                <Scissors className="w-5 h-5 text-amber-500" />
+                Raking de Serviços Populares
+              </h3>
+              <p className="text-sm text-zinc-400">Demanda em volume de corte, barba e demais pacotes.</p>
             </div>
-          ) : (
-             <div className="flex-1 flex items-center justify-center text-zinc-600 text-sm bg-white/[0.02] rounded-xl border border-dashed border-white/5">
-                Nenhum histórico de serviços
+            
+            {serviceData.length > 0 ? (
+              <div className="flex-1 w-full mt-4">
+                <ResponsiveContainer width="100%" height="100%">
+                  <BarChart data={serviceData} margin={{ top: 5, right: 30, left: 20, bottom: 5 }} layout="vertical">
+                    <CartesianGrid strokeDasharray="3 3" horizontal={true} vertical={false} stroke="#ffffff10" />
+                    <XAxis type="number" axisLine={false} tickLine={false} tick={{fill: '#a1a1aa', fontSize: 13}} />
+                    <YAxis type="category" dataKey="name" axisLine={false} tickLine={false} tick={{fill: '#e4e4e7', fontSize: 13, fontWeight: 500}} width={120} />
+                    <RechartsTooltip 
+                      cursor={{fill: '#ffffff08'}}
+                      contentStyle={{ backgroundColor: '#18181b', border: '1px solid rgba(255,255,255,0.1)', borderRadius: '12px', color: '#fff' }}
+                    />
+                    <Bar dataKey="count" name="Trabalhos Realizados" radius={[0, 6, 6, 0]} barSize={28}>
+                      {
+                        serviceData.map((entry, index) => (
+                          <Cell key={`cell-${index}`} fill={index === 0 ? '#f59e0b' : '#fcd34d'} opacity={1 - (index * 0.15)} />
+                        ))
+                      }
+                    </Bar>
+                  </BarChart>
+                </ResponsiveContainer>
               </div>
-          )}
+            ) : (
+               <div className="flex-1 flex items-center justify-center text-zinc-600 text-sm bg-white/[0.02] rounded-xl border border-dashed border-white/5">
+                  Nenhum histórico de serviços
+                </div>
+            )}
+          </div>
+
+          {/* Ranking de Clientes */}
+          <div className="bg-white/5 border border-white/10 rounded-2xl p-6 backdrop-blur-xl flex flex-col h-[400px]">
+            <div className="mb-6">
+              <h3 className="text-lg font-bold text-white flex items-center gap-2">
+                <Users className="w-5 h-5 text-amber-500" />
+                Líderes de Receita (Top Clientes)
+              </h3>
+              <p className="text-sm text-zinc-400">Classificação por volume financeiro gerado.</p>
+            </div>
+            
+            <div className="flex-1 overflow-y-auto pr-2 [&::-webkit-scrollbar]:w-2 [&::-webkit-scrollbar-track]:bg-transparent [&::-webkit-scrollbar-thumb]:bg-white/10 [&::-webkit-scrollbar-thumb]:rounded-full">
+              {clientRanking.length > 0 ? (
+                <table className="w-full text-left border-collapse">
+                  <thead className="sticky top-0 bg-[#09090b]/80 backdrop-blur z-10">
+                    <tr className="text-zinc-500 text-xs uppercase tracking-wider border-b border-white/10">
+                      <th className="pb-3 font-medium">Top</th>
+                      <th className="pb-3 font-medium">Cliente</th>
+                      <th className="pb-3 font-medium hidden sm:table-cell">1º Registro</th>
+                      <th className="pb-3 font-medium text-right">Valor Gasto</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {clientRanking.map((client, index) => (
+                      <tr key={index} className="border-b border-white/[0.02] hover:bg-white/[0.04] transition-colors group">
+                        <td className="py-4 text-zinc-500 text-sm font-medium w-8">
+                          {index + 1}°
+                        </td>
+                        <td className="py-4">
+                          <p className="text-zinc-200 text-sm font-medium flex items-center gap-2">
+                            {index < 3 && <Crown className={`w-3 h-3 ${index === 0 ? 'text-amber-400' : index === 1 ? 'text-zinc-400' : 'text-amber-700'}`} />}
+                            {client.name}
+                          </p>
+                        </td>
+                        <td className="py-4 text-zinc-500 text-sm hidden sm:table-cell">
+                          {client.firstDateDisplay.split(' ')[0]}
+                        </td>
+                        <td className="py-4 text-right">
+                          <span className="text-amber-400/90 font-semibold text-sm">
+                            {new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(client.totalSpent)}
+                          </span>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              ) : (
+                <div className="flex items-center justify-center h-full text-zinc-600 text-sm bg-white/[0.02] rounded-xl border border-dashed border-white/5">
+                  Nenhum cliente registrado
+                </div>
+              )}
+            </div>
+          </div>
         </div>
 
       </main>
