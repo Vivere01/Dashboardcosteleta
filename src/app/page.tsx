@@ -4,10 +4,11 @@ import React, { useEffect, useState } from 'react';
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip as RechartsTooltip, ResponsiveContainer, AreaChart, Area, PieChart, Pie, Cell, Legend
 } from 'recharts';
-import { Scissors, Users, DollarSign, TrendingUp, Loader2, Info, Crown, CreditCard, Calendar } from 'lucide-react';
+import { Scissors, Users, DollarSign, TrendingUp, Loader2, Info, Crown, CreditCard, Calendar, AlertTriangle, LayoutDashboard, Clock, CheckCircle2 } from 'lucide-react';
 import Papa from 'papaparse';
 
 const SHEET_URL = "https://docs.google.com/spreadsheets/d/1GmYrrCJWdc2kLGNxEdTJSsdZ-6H8Y_md9GsK5svSjlo/export?format=csv&gid=545750877";
+const INADIMPLENTES_SHEET_URL = "https://docs.google.com/spreadsheets/d/1GmYrrCJWdc2kLGNxEdTJSsdZ-6H8Y_md9GsK5svSjlo/export?format=csv&gid=163897643";
 
 interface ClientRecord {
   name: string;
@@ -15,6 +16,15 @@ interface ClientRecord {
   appointments: number;
   firstDateISO: string;
   firstDateDisplay: string;
+}
+
+interface DelinquentRecord {
+  name: string;
+  dueDate: string;
+  plan: string;
+  monthsLate: number;
+  totalDebt: number;
+  status: string;
 }
 
 export default function Dashboard() {
@@ -35,8 +45,16 @@ export default function Dashboard() {
   const [serviceData, setServiceData] = useState<any[]>([]);
   const [subscriptionVsSingleData, setSubscriptionVsSingleData] = useState<any[]>([]);
   const [clientRanking, setClientRanking] = useState<ClientRecord[]>([]);
+  
+  // States for Delinquency
+  const [activeTab, setActiveTab] = useState<'geral' | 'inadimplentes'>('geral');
+  const [allDelinquencyData, setAllDelinquencyData] = useState<any[]>([]);
+  const [delinquencyData, setDelinquencyData] = useState<DelinquentRecord[]>([]);
+  const [totalPendingRevenue, setTotalPendingRevenue] = useState(0);
+  const [pendingByPlanData, setPendingByPlanData] = useState<any[]>([]);
 
   useEffect(() => {
+    // Fetch General Data
     fetch(SHEET_URL)
       .then(res => res.text())
       .then(csvText => {
@@ -45,16 +63,33 @@ export default function Dashboard() {
           skipEmptyLines: true,
           complete: (results) => {
             setAllData(results.data);
+          },
+          error: (error: Error) => {
+            console.error("Erro ao fazer parse do CSV Geral:", error);
+          }
+        });
+      })
+      .catch((error) => console.error("Erro ao baixar dados da planilha Geral:", error));
+
+    // Fetch Delinquency Data
+    fetch(INADIMPLENTES_SHEET_URL)
+      .then(res => res.text())
+      .then(csvText => {
+        Papa.parse(csvText, {
+          header: true,
+          skipEmptyLines: true,
+          complete: (results) => {
+            setAllDelinquencyData(results.data);
             setLoading(false);
           },
           error: (error: Error) => {
-            console.error("Erro ao fazer parse do CSV:", error);
+            console.error("Erro ao fazer parse do CSV Inadimplentes:", error);
             setLoading(false);
           }
         });
       })
       .catch((error) => {
-        console.error("Erro ao baixar os dados da planilha:", error);
+        console.error("Erro ao baixar dados da planilha Inadimplentes:", error);
         setLoading(false);
       });
   }, []);
@@ -64,6 +99,12 @@ export default function Dashboard() {
       processData(allData);
     }
   }, [allData, startDate, endDate]);
+
+  useEffect(() => {
+    if (allDelinquencyData.length > 0) {
+      processDelinquencyData(allDelinquencyData);
+    }
+  }, [allDelinquencyData]);
 
   const processData = (data: any[]) => {
     let totalRevenue = 0;
@@ -238,6 +279,77 @@ export default function Dashboard() {
     setClientRanking(rankingArray);
   };
 
+  const processDelinquencyData = (data: any[]) => {
+    let pendingRevenue = 0;
+    const records: DelinquentRecord[] = [];
+    const pendingByPlan: Record<string, number> = {};
+
+    data.forEach(row => {
+      const colNames = Object.keys(row);
+      const nameKey = colNames.find(k => k.toUpperCase().includes('NOME')) || 'NOME';
+      const planKey = colNames.find(k => k.toUpperCase().includes('PLANO')) || 'PLANO DE ASSINATURA';
+      const monthsKey = colNames.find(k => k.toUpperCase().includes('MENSALIDADES')) || 'MENSALIDADES EM ATRASO';
+      const dueKey = colNames.find(k => k.toUpperCase().includes('VENCIMENTO')) || 'DATA VENCIMENTO';
+      const statusKey = colNames.find(k => k.toUpperCase().includes('REGURALIZADO')) || 'PAGAMENTO REGURALIZADO';
+
+      const name = row[nameKey];
+      if (!name || name.trim() === '') return;
+
+      const planStr = row[planKey] || '';
+      const monthsStr = row[monthsKey] || '';
+      const status = row[statusKey] || '';
+
+      // Skip if regularized
+      const isRegularized = status.toUpperCase().includes('SIM') || status.toUpperCase().includes('OK');
+      if (isRegularized) return;
+
+      // Extract plan value
+      let planValue = 0;
+      const valMatch = planStr.match(/R\$\s*([\d,.]+)/);
+      if (valMatch) {
+        planValue = parseFloat(valMatch[1].replace(/\./g, '').replace(',', '.'));
+      }
+
+      // Extract months late
+      let monthsLate = 0;
+      const monthMatch = monthsStr.match(/(\d+)/);
+      if (monthMatch) {
+        monthsLate = parseInt(monthMatch[1]);
+      }
+
+      const totalDebt = planValue * monthsLate;
+      if (totalDebt > 0) {
+        pendingRevenue += totalDebt;
+        
+        // Group by plan name (simplified)
+        const planName = planStr.split('R$')[0].trim() || 'Outros';
+        pendingByPlan[planName] = (pendingByPlan[planName] || 0) + totalDebt;
+
+        records.push({
+          name: name.trim(),
+          dueDate: row[dueKey] || 'N/A',
+          plan: planName,
+          monthsLate,
+          totalDebt,
+          status: status || 'Pendente'
+        });
+      }
+    });
+
+    setDelinquencyData(records.sort((a, b) => b.totalDebt - a.totalDebt));
+    setTotalPendingRevenue(pendingRevenue);
+
+    const colors = ['#f59e0b', '#3b82f6', '#10b981', '#ef4444', '#8b5cf6'];
+    const sortedPlans = Object.entries(pendingByPlan)
+      .sort((a, b) => b[1] - a[1]);
+
+    setPendingByPlanData(sortedPlans.map(([name, value], index) => ({
+      name,
+      value,
+      color: colors[index % colors.length]
+    })));
+  };
+
   if (loading) {
     return (
       <div className="min-h-screen bg-zinc-950 flex flex-col items-center justify-center text-zinc-400 font-sans">
@@ -262,6 +374,24 @@ export default function Dashboard() {
               <p className="text-xs text-amber-500/80 font-medium">Painel Executivo Premium</p>
             </div>
           </div>
+          
+          <div className="flex bg-white/5 p-1 rounded-xl border border-white/10 backdrop-blur-md">
+            <button 
+              onClick={() => setActiveTab('geral')}
+              className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-all ${activeTab === 'geral' ? 'bg-amber-500 text-black shadow-lg shadow-amber-500/20' : 'text-zinc-400 hover:text-white'}`}
+            >
+              <LayoutDashboard className="w-4 h-4" />
+              Geral
+            </button>
+            <button 
+              onClick={() => setActiveTab('inadimplentes')}
+              className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-all ${activeTab === 'inadimplentes' ? 'bg-amber-500 text-black shadow-lg shadow-amber-500/20' : 'text-zinc-400 hover:text-white'}`}
+            >
+              <AlertTriangle className="w-4 h-4" />
+              Inadimplência
+            </button>
+          </div>
+
           <div className="flex items-center gap-6 text-sm font-medium">
             <a href="https://docs.google.com/spreadsheets/d/1GmYrrCJWdc2kLGNxEdTJSsdZ-6H8Y_md9GsK5svSjlo/edit#gid=545750877" target="_blank" rel="noreferrer" className="text-zinc-400 hover:text-amber-400 transition-colors hidden sm:block">Planilha de Base</a>
             <div className="h-8 w-[1px] bg-white/10 hidden sm:block"></div>
@@ -281,38 +411,45 @@ export default function Dashboard() {
         {/* Header Section */}
         <div className="flex flex-col xl:flex-row xl:items-end justify-between mb-10 gap-6">
           <div>
-            <h2 className="text-3xl font-bold text-white tracking-tight">Desempenho Geral</h2>
-            <p className="text-zinc-400 mt-2">Visão consolidada em tempo real da Barbearia Costeleta.</p>
+            <h2 className="text-3xl font-bold text-white tracking-tight">
+              {activeTab === 'geral' ? 'Desempenho Geral' : 'Controle de Inadimplência'}
+            </h2>
+            <p className="text-zinc-400 mt-2">
+              {activeTab === 'geral' 
+                ? 'Visão consolidada em tempo real da Barbearia Costeleta.' 
+                : 'Monitoramento de mensalidades pendentes e ações de cobrança.'}
+            </p>
           </div>
 
           <div className="flex flex-col sm:flex-row items-end sm:items-center gap-4">
-            {/* Filtro de Datas */}
-            <div className="flex items-center bg-white/5 border border-white/10 rounded-xl p-1 backdrop-blur-xl h-11">
-              <div className="pl-3 pr-2 flex items-center text-zinc-400">
-                <Calendar className="w-4 h-4" />
+            {activeTab === 'geral' && (
+              <div className="flex items-center bg-white/5 border border-white/10 rounded-xl p-1 backdrop-blur-xl h-11">
+                <div className="pl-3 pr-2 flex items-center text-zinc-400">
+                  <Calendar className="w-4 h-4" />
+                </div>
+                <input
+                  type="date"
+                  value={startDate}
+                  onChange={(e) => setStartDate(e.target.value)}
+                  className="bg-transparent text-sm text-zinc-300 px-2 py-1 outline-none [color-scheme:dark] rounded-lg transition-colors hover:bg-white/5 focus:bg-white/10 border border-transparent focus:border-amber-500/50"
+                />
+                <span className="text-zinc-500 px-2 text-xs font-medium">até</span>
+                <input
+                  type="date"
+                  value={endDate}
+                  onChange={(e) => setEndDate(e.target.value)}
+                  className="bg-transparent text-sm text-zinc-300 px-2 py-1 outline-none [color-scheme:dark] rounded-lg transition-colors hover:bg-white/5 focus:bg-white/10 border border-transparent focus:border-amber-500/50"
+                />
+                {(startDate || endDate) && (
+                  <button
+                    onClick={() => { setStartDate(''); setEndDate(''); }}
+                    className="ml-2 mr-1 px-2 py-1 bg-red-500/10 hover:bg-red-500/20 text-red-400 text-xs rounded-md transition-colors font-medium border border-red-500/10"
+                  >
+                    Limpar
+                  </button>
+                )}
               </div>
-              <input
-                type="date"
-                value={startDate}
-                onChange={(e) => setStartDate(e.target.value)}
-                className="bg-transparent text-sm text-zinc-300 px-2 py-1 outline-none [color-scheme:dark] rounded-lg transition-colors hover:bg-white/5 focus:bg-white/10 border border-transparent focus:border-amber-500/50"
-              />
-              <span className="text-zinc-500 px-2 text-xs font-medium">até</span>
-              <input
-                type="date"
-                value={endDate}
-                onChange={(e) => setEndDate(e.target.value)}
-                className="bg-transparent text-sm text-zinc-300 px-2 py-1 outline-none [color-scheme:dark] rounded-lg transition-colors hover:bg-white/5 focus:bg-white/10 border border-transparent focus:border-amber-500/50"
-              />
-              {(startDate || endDate) && (
-                <button
-                  onClick={() => { setStartDate(''); setEndDate(''); }}
-                  className="ml-2 mr-1 px-2 py-1 bg-red-500/10 hover:bg-red-500/20 text-red-400 text-xs rounded-md transition-colors font-medium border border-red-500/10"
-                >
-                  Limpar
-                </button>
-              )}
-            </div>
+            )}
 
             <button onClick={() => window.location.reload()} className="group relative inline-flex h-11 items-center justify-center overflow-hidden rounded-xl bg-amber-500 px-6 font-medium text-black transition-all hover:bg-amber-400 shrink-0 shadow-lg shadow-amber-500/20">
               <TrendingUp className="w-4 h-4 mr-2" />
@@ -324,304 +461,463 @@ export default function Dashboard() {
           </div>
         </div>
 
-        {allData.length === 0 && (
-          <div className="bg-amber-500/10 border border-amber-500/20 text-amber-200 rounded-xl p-5 mb-10 flex items-start gap-4 backdrop-blur-sm">
-            <div className="p-2 bg-amber-500/20 rounded-lg shrink-0">
-              <Info className="w-6 h-6 text-amber-400" />
-            </div>
-            <div>
-              <h4 className="text-lg font-semibold text-amber-400 mb-1">A interface está pronta, mas a planilha tem zero resultados.</h4>
-              <p className="text-amber-200/80 leading-relaxed">Sua planilha Google consta atualmente como vazia. Quando novos agendamentos forem adicionados lá, os relatórios aparecerão.</p>
-            </div>
-          </div>
-        )}
-
-        {allData.length > 0 && metrics.appointments === 0 && (startDate || endDate) && (
-          <div className="bg-zinc-800/50 border border-zinc-700 text-zinc-300 rounded-xl p-5 mb-10 flex items-center justify-center backdrop-blur-sm">
-            <p>Nenhum agendamento encontrado no período selecionado.</p>
-          </div>
-        )}
-
-        {/* Top KPIs Row */}
-        <div className="grid grid-cols-1 md:grid-cols-3 lg:grid-cols-5 gap-6 mb-10">
-          {/* Receita Bruta */}
-          <div className="relative overflow-hidden bg-white/5 border border-white/10 rounded-2xl p-6 backdrop-blur-xl group hover:bg-white/[0.07] transition-colors">
-            <div className="absolute top-0 right-0 w-32 h-32 bg-amber-500/5 rounded-full blur-3xl -mr-10 -mt-10 pointer-events-none"></div>
-            <div className="flex justify-between items-start mb-4">
-              <h3 className="text-zinc-400 font-medium text-sm tracking-wide uppercase">Receita Total</h3>
-              <div className="bg-emerald-500/10 p-2 rounded-lg text-emerald-400 group-hover:scale-110 transition-transform">
-                <DollarSign className="w-5 h-5" />
-              </div>
-            </div>
-            <div className="text-3xl font-bold text-white tracking-tight">
-              {new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(metrics.revenue)}
-            </div>
-            <div className="mt-4 w-full bg-white/10 h-1 rounded-full overflow-hidden">
-              <div className="bg-gradient-to-r from-emerald-400 to-teal-400 h-full w-[100%]"></div>
-            </div>
-          </div>
-
-          {/* Receita Assinaturas */}
-          <div className="relative overflow-hidden bg-white/5 border border-white/10 rounded-2xl p-6 backdrop-blur-xl group hover:bg-white/[0.07] transition-colors">
-            <div className="flex justify-between items-start mb-4">
-              <h3 className="text-zinc-400 font-medium text-sm tracking-wide uppercase">Assinaturas (Ativas)</h3>
-              <div className="bg-amber-500/10 p-2 rounded-lg text-amber-400 group-hover:scale-110 transition-transform">
-                <Crown className="w-5 h-5" />
-              </div>
-            </div>
-            <div className="text-3xl font-bold text-white tracking-tight">
-              {new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(metrics.subscriptionsRevenue)}
-            </div>
-            <p className="text-xs text-zinc-500 mt-2 flex items-center font-medium">
-              <span className="text-amber-500 mr-2 flex items-center">
-                {metrics.revenue > 0 ? ((metrics.subscriptionsRevenue / metrics.revenue) * 100).toFixed(0) : 0}%
-              </span>
-              da receita filtrada
-            </p>
-          </div>
-
-          {/* Receita Avulsos */}
-          <div className="relative overflow-hidden bg-white/5 border border-white/10 rounded-2xl p-6 backdrop-blur-xl group hover:bg-white/[0.07] transition-colors">
-            <div className="flex justify-between items-start mb-4">
-              <h3 className="text-zinc-400 font-medium text-sm tracking-wide uppercase">Serviços Avulsos</h3>
-              <div className="bg-blue-500/10 p-2 rounded-lg text-blue-400 group-hover:scale-110 transition-transform">
-                <CreditCard className="w-5 h-5" />
-              </div>
-            </div>
-            <div className="text-3xl font-bold text-white tracking-tight">
-              {new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(metrics.singleServicesRevenue)}
-            </div>
-            <p className="text-xs text-zinc-500 mt-2 flex items-center font-medium">
-              <span className="text-blue-400 mr-2 flex items-center">
-                {metrics.revenue > 0 ? ((metrics.singleServicesRevenue / metrics.revenue) * 100).toFixed(0) : 0}%
-              </span>
-              da receita filtrada
-            </p>
-          </div>
-
-          {/* Clientes */}
-          <div className="relative overflow-hidden bg-white/5 border border-white/10 rounded-2xl p-6 backdrop-blur-xl group hover:bg-white/[0.07] transition-colors">
-            <div className="flex justify-between items-start mb-4">
-              <h3 className="text-zinc-400 font-medium text-sm tracking-wide uppercase">Volume Atendido</h3>
-              <div className="bg-indigo-500/10 p-2 rounded-lg text-indigo-400 group-hover:scale-110 transition-transform">
-                <Users className="w-5 h-5" />
-              </div>
-            </div>
-            <div className="flex items-baseline gap-2">
-              <span className="text-3xl font-bold text-white tracking-tight">{metrics.appointments}</span>
-              <span className="text-zinc-500 text-sm">atendimentos</span>
-            </div>
-            <p className="text-xs text-zinc-500 mt-2 font-medium">
-              Por <span className="text-zinc-300">{metrics.uniqueClients} clientes</span> únicos.
-            </p>
-          </div>
-
-          {/* Quantidade de Serviços */}
-          <div className="relative overflow-hidden bg-white/5 border border-white/10 rounded-2xl p-6 backdrop-blur-xl group hover:bg-white/[0.07] transition-colors">
-            <div className="flex justify-between items-start mb-4">
-              <h3 className="text-zinc-400 font-medium text-sm tracking-wide uppercase">Qtd. Serviços</h3>
-              <div className="bg-emerald-500/10 p-2 rounded-lg text-emerald-400 group-hover:scale-110 transition-transform">
-                <Scissors className="w-5 h-5" />
-              </div>
-            </div>
-            <div className="flex items-baseline gap-2">
-              <span className="text-3xl font-bold text-white tracking-tight">{metrics.totalServices}</span>
-              <span className="text-zinc-500 text-sm">serviços</span>
-            </div>
-            <p className="text-xs text-zinc-500 mt-2 font-medium">
-              Média de <span className="text-zinc-300">{metrics.appointments > 0 ? (metrics.totalServices / metrics.appointments).toFixed(1) : 0}</span> por atendimento.
-            </p>
-          </div>
-        </div>
-
-        {/* Charts Middle Row */}
-        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 mb-10">
-
-          {/* Main Area Chart (Assinaturas vs Avulsos timeline) */}
-          <div className="lg:col-span-2 bg-white/5 border border-white/10 rounded-2xl p-6 backdrop-blur-xl flex flex-col h-[400px]">
-            <div className="mb-6">
-              <h3 className="text-lg font-bold text-white flex items-center gap-2">
-                <TrendingUp className="w-5 h-5 text-amber-500" />
-                Desempenho de Receita: Assinaturas vs Avulsos
-              </h3>
-              <p className="text-sm text-zinc-400">Evolução diária dos tipos de faturamento filtrados.</p>
-            </div>
-
-            {revenueData.length > 0 ? (
-              <div className="flex-1 w-full">
-                <ResponsiveContainer width="100%" height="100%">
-                  <AreaChart data={revenueData} margin={{ top: 10, right: 10, left: -20, bottom: 0 }}>
-                    <defs>
-                      <linearGradient id="colorAssinaturas" x1="0" y1="0" x2="0" y2="1">
-                        <stop offset="5%" stopColor="#f59e0b" stopOpacity={0.4} />
-                        <stop offset="95%" stopColor="#f59e0b" stopOpacity={0} />
-                      </linearGradient>
-                      <linearGradient id="colorAvulsos" x1="0" y1="0" x2="0" y2="1">
-                        <stop offset="5%" stopColor="#3b82f6" stopOpacity={0.4} />
-                        <stop offset="95%" stopColor="#3b82f6" stopOpacity={0} />
-                      </linearGradient>
-                    </defs>
-                    <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#ffffff10" />
-                    <XAxis dataKey="name" axisLine={false} tickLine={false} tick={{ fill: '#a1a1aa', fontSize: 12 }} dy={10} />
-                    <YAxis axisLine={false} tickLine={false} tick={{ fill: '#a1a1aa', fontSize: 13 }} tickFormatter={(val) => `R$${val}`} />
-                    <RechartsTooltip
-                      contentStyle={{ backgroundColor: '#18181b', border: '1px solid rgba(255,255,255,0.1)', borderRadius: '12px', color: '#fff' }}
-                      itemStyle={{ color: '#fff' }}
-                    />
-                    <Legend iconType="circle" wrapperStyle={{ paddingTop: '20px' }} />
-                    <Area type="monotone" dataKey="Assinaturas" stroke="#f59e0b" strokeWidth={3} fillOpacity={1} fill="url(#colorAssinaturas)" activeDot={{ r: 6, strokeWidth: 0, fill: '#f59e0b' }} />
-                    <Area type="monotone" dataKey="Avulsos" stroke="#3b82f6" strokeWidth={3} fillOpacity={1} fill="url(#colorAvulsos)" activeDot={{ r: 6, strokeWidth: 0, fill: '#3b82f6' }} />
-                  </AreaChart>
-                </ResponsiveContainer>
-              </div>
-            ) : (
-              <div className="flex-1 flex items-center justify-center text-zinc-600 text-sm bg-white/[0.02] rounded-xl border border-dashed border-white/5">
-                Sem dados no período
-              </div>
-            )}
-          </div>
-
-          {/* Distribuição de Receita */}
-          <div className="bg-white/5 border border-white/10 rounded-2xl p-6 backdrop-blur-xl flex flex-col h-[400px]">
-            <div className="mb-2">
-              <h3 className="text-lg font-bold text-white flex items-center gap-2">
-                <Crown className="w-5 h-5 text-amber-500" />
-                Matriz de Receita
-              </h3>
-              <p className="text-sm text-zinc-400">Share Assinatura vs Avulso</p>
-            </div>
-
-            {subscriptionVsSingleData.some(d => d.value > 0) ? (
-              <div className="flex-1 w-full flex-col flex items-center justify-center relative">
-                <ResponsiveContainer width="100%" height={220}>
-                  <PieChart>
-                    <Pie data={subscriptionVsSingleData} innerRadius={60} outerRadius={85} paddingAngle={5} dataKey="value" stroke="none">
-                      {subscriptionVsSingleData.map((entry, index) => (
-                        <Cell key={`cell-${index}`} fill={entry.color} />
-                      ))}
-                    </Pie>
-                    <RechartsTooltip
-                      contentStyle={{ backgroundColor: '#18181b', border: '1px solid rgba(255,255,255,0.1)', borderRadius: '12px', color: '#fff' }}
-                      formatter={(value: any) => new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(value)}
-                    />
-                  </PieChart>
-                </ResponsiveContainer>
-                {/* Custom Legend for Pie Chart inside the box */}
-                <div className="w-full mt-4 space-y-3">
-                  {subscriptionVsSingleData.map((item, index) => (
-                    <div key={index} className="flex justify-between items-center text-sm">
-                      <div className="flex items-center gap-2">
-                        <div className="w-3 h-3 rounded-full" style={{ backgroundColor: item.color }}></div>
-                        <span className="text-zinc-300">{item.name}</span>
-                      </div>
-                      <span className="font-semibold text-white">
-                        {new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(item.value)}
-                      </span>
-                    </div>
-                  ))}
+        {activeTab === 'geral' ? (
+          <>
+            {allData.length === 0 && (
+              <div className="bg-amber-500/10 border border-amber-500/20 text-amber-200 rounded-xl p-5 mb-10 flex items-start gap-4 backdrop-blur-sm">
+                <div className="p-2 bg-amber-500/20 rounded-lg shrink-0">
+                  <Info className="w-6 h-6 text-amber-400" />
+                </div>
+                <div>
+                  <h4 className="text-lg font-semibold text-amber-400 mb-1">A interface está pronta, mas a planilha tem zero resultados.</h4>
+                  <p className="text-amber-200/80 leading-relaxed">Sua planilha Google consta atualmente como vazia. Quando novos agendamentos forem adicionados lá, os relatórios aparecerão.</p>
                 </div>
               </div>
-            ) : (
-              <div className="flex-1 flex items-center justify-center text-zinc-600 text-sm bg-white/[0.02] rounded-xl border border-dashed border-white/5 mt-4">
-                Gráfico Indisponível
+            )}
+
+            {allData.length > 0 && metrics.appointments === 0 && (startDate || endDate) && (
+              <div className="bg-zinc-800/50 border border-zinc-700 text-zinc-300 rounded-xl p-5 mb-10 flex items-center justify-center backdrop-blur-sm">
+                <p>Nenhum agendamento encontrado no período selecionado.</p>
               </div>
             )}
-          </div>
-        </div>
 
-        {/* Bottom Area: Rankings */}
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-10">
-          {/* Serviços */}
-          <div className="bg-white/5 border border-white/10 rounded-2xl p-6 backdrop-blur-xl flex flex-col h-[400px]">
-            <div className="mb-6">
-              <h3 className="text-lg font-bold text-white flex items-center gap-2">
-                <Scissors className="w-5 h-5 text-amber-500" />
-                Raking de Serviços Populares
-              </h3>
-              <p className="text-sm text-zinc-400">Demanda em volume de corte, barba e demais pacotes.</p>
+            {/* Top KPIs Row */}
+            <div className="grid grid-cols-1 md:grid-cols-3 lg:grid-cols-5 gap-6 mb-10">
+              {/* Receita Bruta */}
+              <div className="relative overflow-hidden bg-white/5 border border-white/10 rounded-2xl p-6 backdrop-blur-xl group hover:bg-white/[0.07] transition-colors">
+                <div className="absolute top-0 right-0 w-32 h-32 bg-amber-500/5 rounded-full blur-3xl -mr-10 -mt-10 pointer-events-none"></div>
+                <div className="flex justify-between items-start mb-4">
+                  <h3 className="text-zinc-400 font-medium text-sm tracking-wide uppercase">Receita Total</h3>
+                  <div className="bg-emerald-500/10 p-2 rounded-lg text-emerald-400 group-hover:scale-110 transition-transform">
+                    <DollarSign className="w-5 h-5" />
+                  </div>
+                </div>
+                <div className="text-3xl font-bold text-white tracking-tight">
+                  {new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(metrics.revenue)}
+                </div>
+                <div className="mt-4 w-full bg-white/10 h-1 rounded-full overflow-hidden">
+                  <div className="bg-gradient-to-r from-emerald-400 to-teal-400 h-full w-[100%]"></div>
+                </div>
+              </div>
+
+              {/* Receita Assinaturas */}
+              <div className="relative overflow-hidden bg-white/5 border border-white/10 rounded-2xl p-6 backdrop-blur-xl group hover:bg-white/[0.07] transition-colors">
+                <div className="flex justify-between items-start mb-4">
+                  <h3 className="text-zinc-400 font-medium text-sm tracking-wide uppercase">Assinaturas (Ativas)</h3>
+                  <div className="bg-amber-500/10 p-2 rounded-lg text-amber-400 group-hover:scale-110 transition-transform">
+                    <Crown className="w-5 h-5" />
+                  </div>
+                </div>
+                <div className="text-3xl font-bold text-white tracking-tight">
+                  {new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(metrics.subscriptionsRevenue)}
+                </div>
+                <p className="text-xs text-zinc-500 mt-2 flex items-center font-medium">
+                  <span className="text-amber-500 mr-2 flex items-center">
+                    {metrics.revenue > 0 ? ((metrics.subscriptionsRevenue / metrics.revenue) * 100).toFixed(0) : 0}%
+                  </span>
+                  da receita filtrada
+                </p>
+              </div>
+
+              {/* Receita Avulsos */}
+              <div className="relative overflow-hidden bg-white/5 border border-white/10 rounded-2xl p-6 backdrop-blur-xl group hover:bg-white/[0.07] transition-colors">
+                <div className="flex justify-between items-start mb-4">
+                  <h3 className="text-zinc-400 font-medium text-sm tracking-wide uppercase">Serviços Avulsos</h3>
+                  <div className="bg-blue-500/10 p-2 rounded-lg text-blue-400 group-hover:scale-110 transition-transform">
+                    <CreditCard className="w-5 h-5" />
+                  </div>
+                </div>
+                <div className="text-3xl font-bold text-white tracking-tight">
+                  {new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(metrics.singleServicesRevenue)}
+                </div>
+                <p className="text-xs text-zinc-500 mt-2 flex items-center font-medium">
+                  <span className="text-blue-400 mr-2 flex items-center">
+                    {metrics.revenue > 0 ? ((metrics.singleServicesRevenue / metrics.revenue) * 100).toFixed(0) : 0}%
+                  </span>
+                  da receita filtrada
+                </p>
+              </div>
+
+              {/* Clientes */}
+              <div className="relative overflow-hidden bg-white/5 border border-white/10 rounded-2xl p-6 backdrop-blur-xl group hover:bg-white/[0.07] transition-colors">
+                <div className="flex justify-between items-start mb-4">
+                  <h3 className="text-zinc-400 font-medium text-sm tracking-wide uppercase">Volume Atendido</h3>
+                  <div className="bg-indigo-500/10 p-2 rounded-lg text-indigo-400 group-hover:scale-110 transition-transform">
+                    <Users className="w-5 h-5" />
+                  </div>
+                </div>
+                <div className="flex items-baseline gap-2">
+                  <span className="text-3xl font-bold text-white tracking-tight">{metrics.appointments}</span>
+                  <span className="text-zinc-500 text-sm">atendimentos</span>
+                </div>
+                <p className="text-xs text-zinc-500 mt-2 font-medium">
+                  Por <span className="text-zinc-300">{metrics.uniqueClients} clientes</span> únicos.
+                </p>
+              </div>
+
+              {/* Quantidade de Serviços */}
+              <div className="relative overflow-hidden bg-white/5 border border-white/10 rounded-2xl p-6 backdrop-blur-xl group hover:bg-white/[0.07] transition-colors">
+                <div className="flex justify-between items-start mb-4">
+                  <h3 className="text-zinc-400 font-medium text-sm tracking-wide uppercase">Qtd. Serviços</h3>
+                  <div className="bg-emerald-500/10 p-2 rounded-lg text-emerald-400 group-hover:scale-110 transition-transform">
+                    <Scissors className="w-5 h-5" />
+                  </div>
+                </div>
+                <div className="flex items-baseline gap-2">
+                  <span className="text-3xl font-bold text-white tracking-tight">{metrics.totalServices}</span>
+                  <span className="text-zinc-500 text-sm">serviços</span>
+                </div>
+                <p className="text-xs text-zinc-500 mt-2 font-medium">
+                  Média de <span className="text-zinc-300">{metrics.appointments > 0 ? (metrics.totalServices / metrics.appointments).toFixed(1) : 0}</span> por atendimento.
+                </p>
+              </div>
             </div>
 
-            {serviceData.length > 0 ? (
-              <div className="flex-1 w-full mt-4">
-                <ResponsiveContainer width="100%" height="100%">
-                  <BarChart data={serviceData} margin={{ top: 5, right: 30, left: 20, bottom: 5 }} layout="vertical">
-                    <CartesianGrid strokeDasharray="3 3" horizontal={true} vertical={false} stroke="#ffffff10" />
-                    <XAxis type="number" axisLine={false} tickLine={false} tick={{ fill: '#a1a1aa', fontSize: 13 }} />
-                    <YAxis type="category" dataKey="name" axisLine={false} tickLine={false} tick={{ fill: '#e4e4e7', fontSize: 13, fontWeight: 500 }} width={120} />
-                    <RechartsTooltip
-                      cursor={{ fill: '#ffffff08' }}
-                      contentStyle={{ backgroundColor: '#18181b', border: '1px solid rgba(255,255,255,0.1)', borderRadius: '12px', color: '#fff' }}
-                    />
-                    <Bar dataKey="count" name="Trabalhos Realizados" radius={[0, 6, 6, 0]} barSize={28}>
-                      {
-                        serviceData.map((entry, index) => (
-                          <Cell key={`cell-${index}`} fill={index === 0 ? '#f59e0b' : '#fcd34d'} opacity={1 - (index * 0.15)} />
-                        ))
-                      }
-                    </Bar>
-                  </BarChart>
-                </ResponsiveContainer>
-              </div>
-            ) : (
-              <div className="flex-1 flex items-center justify-center text-zinc-600 text-sm bg-white/[0.02] rounded-xl border border-dashed border-white/5">
-                Nenhum histórico de serviços
-              </div>
-            )}
-          </div>
+            {/* Charts Middle Row */}
+            <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 mb-10">
 
-          {/* Ranking de Clientes */}
-          <div className="bg-white/5 border border-white/10 rounded-2xl p-6 backdrop-blur-xl flex flex-col h-[400px]">
-            <div className="mb-6">
-              <h3 className="text-lg font-bold text-white flex items-center gap-2">
-                <Users className="w-5 h-5 text-amber-500" />
-                Líderes de Receita (Top Clientes)
-              </h3>
-              <p className="text-sm text-zinc-400">Classificação por volume financeiro gerado.</p>
+              {/* Main Area Chart (Assinaturas vs Avulsos timeline) */}
+              <div className="lg:col-span-2 bg-white/5 border border-white/10 rounded-2xl p-6 backdrop-blur-xl flex flex-col h-[400px]">
+                <div className="mb-6">
+                  <h3 className="text-lg font-bold text-white flex items-center gap-2">
+                    <TrendingUp className="w-5 h-5 text-amber-500" />
+                    Desempenho de Receita: Assinaturas vs Avulsos
+                  </h3>
+                  <p className="text-sm text-zinc-400">Evolução diária dos tipos de faturamento filtrados.</p>
+                </div>
+
+                {revenueData.length > 0 ? (
+                  <div className="flex-1 w-full">
+                    <ResponsiveContainer width="100%" height="100%">
+                      <AreaChart data={revenueData} margin={{ top: 10, right: 10, left: -20, bottom: 0 }}>
+                        <defs>
+                          <linearGradient id="colorAssinaturas" x1="0" y1="0" x2="0" y2="1">
+                            <stop offset="5%" stopColor="#f59e0b" stopOpacity={0.4} />
+                            <stop offset="95%" stopColor="#f59e0b" stopOpacity={0} />
+                          </linearGradient>
+                          <linearGradient id="colorAvulsos" x1="0" y1="0" x2="0" y2="1">
+                            <stop offset="5%" stopColor="#3b82f6" stopOpacity={0.4} />
+                            <stop offset="95%" stopColor="#3b82f6" stopOpacity={0} />
+                          </linearGradient>
+                        </defs>
+                        <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#ffffff10" />
+                        <XAxis dataKey="name" axisLine={false} tickLine={false} tick={{ fill: '#a1a1aa', fontSize: 12 }} dy={10} />
+                        <YAxis axisLine={false} tickLine={false} tick={{ fill: '#a1a1aa', fontSize: 13 }} tickFormatter={(val) => `R$${val}`} />
+                        <RechartsTooltip
+                          contentStyle={{ backgroundColor: '#18181b', border: '1px solid rgba(255,255,255,0.1)', borderRadius: '12px', color: '#fff' }}
+                          itemStyle={{ color: '#fff' }}
+                        />
+                        <Legend iconType="circle" wrapperStyle={{ paddingTop: '20px' }} />
+                        <Area type="monotone" dataKey="Assinaturas" stroke="#f59e0b" strokeWidth={3} fillOpacity={1} fill="url(#colorAssinaturas)" activeDot={{ r: 6, strokeWidth: 0, fill: '#f59e0b' }} />
+                        <Area type="monotone" dataKey="Avulsos" stroke="#3b82f6" strokeWidth={3} fillOpacity={1} fill="url(#colorAvulsos)" activeDot={{ r: 6, strokeWidth: 0, fill: '#3b82f6' }} />
+                      </AreaChart>
+                    </ResponsiveContainer>
+                  </div>
+                ) : (
+                  <div className="flex-1 flex items-center justify-center text-zinc-600 text-sm bg-white/[0.02] rounded-xl border border-dashed border-white/5">
+                    Sem dados no período
+                  </div>
+                )}
+              </div>
+
+              {/* Distribuição de Receita */}
+              <div className="bg-white/5 border border-white/10 rounded-2xl p-6 backdrop-blur-xl flex flex-col h-[400px]">
+                <div className="mb-2">
+                  <h3 className="text-lg font-bold text-white flex items-center gap-2">
+                    <Crown className="w-5 h-5 text-amber-500" />
+                    Matriz de Receita
+                  </h3>
+                  <p className="text-sm text-zinc-400">Share Assinatura vs Avulso</p>
+                </div>
+
+                {subscriptionVsSingleData.some(d => d.value > 0) ? (
+                  <div className="flex-1 w-full flex-col flex items-center justify-center relative">
+                    <ResponsiveContainer width="100%" height={220}>
+                      <PieChart>
+                        <Pie data={subscriptionVsSingleData} innerRadius={60} outerRadius={85} paddingAngle={5} dataKey="value" stroke="none">
+                          {subscriptionVsSingleData.map((entry, index) => (
+                            <Cell key={`cell-${index}`} fill={entry.color} />
+                          ))}
+                        </Pie>
+                        <RechartsTooltip
+                          contentStyle={{ backgroundColor: '#18181b', border: '1px solid rgba(255,255,255,0.1)', borderRadius: '12px', color: '#fff' }}
+                          formatter={(value: any) => new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(value)}
+                        />
+                      </PieChart>
+                    </ResponsiveContainer>
+                    <div className="w-full mt-4 space-y-3">
+                      {subscriptionVsSingleData.map((item, index) => (
+                        <div key={index} className="flex justify-between items-center text-sm">
+                          <div className="flex items-center gap-2">
+                            <div className="w-3 h-3 rounded-full" style={{ backgroundColor: item.color }}></div>
+                            <span className="text-zinc-300">{item.name}</span>
+                          </div>
+                          <span className="font-semibold text-white">
+                            {new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(item.value)}
+                          </span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                ) : (
+                  <div className="flex-1 flex items-center justify-center text-zinc-600 text-sm bg-white/[0.02] rounded-xl border border-dashed border-white/5 mt-4">
+                    Gráfico Indisponível
+                  </div>
+                )}
+              </div>
             </div>
 
-            <div className="flex-1 overflow-y-auto pr-2 [&::-webkit-scrollbar]:w-2 [&::-webkit-scrollbar-track]:bg-transparent [&::-webkit-scrollbar-thumb]:bg-white/10 [&::-webkit-scrollbar-thumb]:rounded-full">
-              {clientRanking.length > 0 ? (
+            {/* Bottom Area: Rankings */}
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-10">
+              {/* Serviços */}
+              <div className="bg-white/5 border border-white/10 rounded-2xl p-6 backdrop-blur-xl flex flex-col h-[400px]">
+                <div className="mb-6">
+                  <h3 className="text-lg font-bold text-white flex items-center gap-2">
+                    <Scissors className="w-5 h-5 text-amber-500" />
+                    Raking de Serviços Populares
+                  </h3>
+                  <p className="text-sm text-zinc-400">Demanda em volume de corte, barba e demais pacotes.</p>
+                </div>
+
+                {serviceData.length > 0 ? (
+                  <div className="flex-1 w-full mt-4">
+                    <ResponsiveContainer width="100%" height="100%">
+                      <BarChart data={serviceData} margin={{ top: 5, right: 30, left: 20, bottom: 5 }} layout="vertical">
+                        <CartesianGrid strokeDasharray="3 3" horizontal={true} vertical={false} stroke="#ffffff10" />
+                        <XAxis type="number" axisLine={false} tickLine={false} tick={{ fill: '#a1a1aa', fontSize: 13 }} />
+                        <YAxis type="category" dataKey="name" axisLine={false} tickLine={false} tick={{ fill: '#e4e4e7', fontSize: 13, fontWeight: 500 }} width={120} />
+                        <RechartsTooltip
+                          cursor={{ fill: '#ffffff08' }}
+                          contentStyle={{ backgroundColor: '#18181b', border: '1px solid rgba(255,255,255,0.1)', borderRadius: '12px', color: '#fff' }}
+                        />
+                        <Bar dataKey="count" name="Trabalhos Realizados" radius={[0, 6, 6, 0]} barSize={28}>
+                          {
+                            serviceData.map((entry, index) => (
+                              <Cell key={`cell-${index}`} fill={index === 0 ? '#f59e0b' : '#fcd34d'} opacity={1 - (index * 0.15)} />
+                            ))
+                          }
+                        </Bar>
+                      </BarChart>
+                    </ResponsiveContainer>
+                  </div>
+                ) : (
+                  <div className="flex-1 flex items-center justify-center text-zinc-600 text-sm bg-white/[0.02] rounded-xl border border-dashed border-white/5">
+                    Nenhum histórico de serviços
+                  </div>
+                )}
+              </div>
+
+              {/* Ranking de Clientes */}
+              <div className="bg-white/5 border border-white/10 rounded-2xl p-6 backdrop-blur-xl flex flex-col h-[400px]">
+                <div className="mb-6">
+                  <h3 className="text-lg font-bold text-white flex items-center gap-2">
+                    <Users className="w-5 h-5 text-amber-500" />
+                    Líderes de Receita (Top Clientes)
+                  </h3>
+                  <p className="text-sm text-zinc-400">Classificação por volume financeiro gerado.</p>
+                </div>
+
+                <div className="flex-1 overflow-y-auto pr-2 [&::-webkit-scrollbar]:w-2 [&::-webkit-scrollbar-track]:bg-transparent [&::-webkit-scrollbar-thumb]:bg-white/10 [&::-webkit-scrollbar-thumb]:rounded-full">
+                  {clientRanking.length > 0 ? (
+                    <table className="w-full text-left border-collapse">
+                      <thead className="sticky top-0 bg-[#09090b]/80 backdrop-blur z-10">
+                        <tr className="text-zinc-500 text-xs uppercase tracking-wider border-b border-white/10">
+                          <th className="pb-3 font-medium">Top</th>
+                          <th className="pb-3 font-medium">Cliente</th>
+                          <th className="pb-3 font-medium hidden sm:table-cell">1º Registro</th>
+                          <th className="pb-3 font-medium text-right">Valor Gasto</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {clientRanking.map((client, index) => (
+                          <tr key={index} className="border-b border-white/[0.02] hover:bg-white/[0.04] transition-colors group">
+                            <td className="py-4 text-zinc-500 text-sm font-medium w-8">
+                              {index + 1}°
+                            </td>
+                            <td className="py-4">
+                              <p className="text-zinc-200 text-sm font-medium flex items-center gap-2">
+                                {index < 3 && <Crown className={`w-3 h-3 ${index === 0 ? 'text-amber-400' : index === 1 ? 'text-zinc-400' : 'text-amber-700'}`} />}
+                                {client.name}
+                              </p>
+                            </td>
+                            <td className="py-4 text-zinc-500 text-sm hidden sm:table-cell">
+                              {client.firstDateDisplay.split(' ')[0]}
+                            </td>
+                            <td className="py-4 text-right">
+                              <span className="text-amber-400/90 font-semibold text-sm">
+                                {new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(client.totalSpent)}
+                              </span>
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  ) : (
+                    <div className="flex items-center justify-center h-full text-zinc-600 text-sm bg-white/[0.02] rounded-xl border border-dashed border-white/5">
+                      Nenhum cliente registrado
+                    </div>
+                  )}
+                </div>
+              </div>
+            </div>
+          </>
+        ) : (
+          /* Inadimplentes View */
+          <div className="animate-in fade-in duration-500">
+            <div className="grid grid-cols-1 lg:grid-cols-4 gap-6 mb-10">
+              {/* Resumo Inadimplência */}
+              <div className="lg:col-span-1 flex flex-col gap-6">
+                <div className="relative overflow-hidden bg-white/5 border border-white/10 rounded-2xl p-6 backdrop-blur-xl group hover:bg-white/[0.07] transition-colors">
+                  <div className="flex justify-between items-start mb-4">
+                    <h3 className="text-zinc-400 font-medium text-sm tracking-wide uppercase">Total Pendente</h3>
+                    <div className="bg-red-500/10 p-2 rounded-lg text-red-400">
+                      <AlertTriangle className="w-5 h-5" />
+                    </div>
+                  </div>
+                  <div className="text-3xl font-bold text-white tracking-tight">
+                    {new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(totalPendingRevenue)}
+                  </div>
+                  <div className="mt-4 flex items-center gap-2">
+                    <span className="text-xs text-zinc-500 font-medium">Ações de cobrança recomendadas</span>
+                  </div>
+                </div>
+
+                <div className="relative overflow-hidden bg-white/5 border border-white/10 rounded-2xl p-6 backdrop-blur-xl group hover:bg-white/[0.07] transition-colors">
+                  <div className="flex justify-between items-start mb-4">
+                    <h3 className="text-zinc-400 font-medium text-sm tracking-wide uppercase">Clientes em Atraso</h3>
+                    <div className="bg-amber-500/10 p-2 rounded-lg text-amber-400">
+                      <Users className="w-5 h-5" />
+                    </div>
+                  </div>
+                  <div className="text-3xl font-bold text-white tracking-tight">
+                    {delinquencyData.length}
+                  </div>
+                  <p className="text-xs text-zinc-500 mt-2">Ticket médio atrasado: <span className="text-amber-500">{delinquencyData.length > 0 ? new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(totalPendingRevenue / delinquencyData.length) : 'R$ 0'}</span></p>
+                </div>
+              </div>
+
+              {/* Gráfico de Pizza Pending by Plan */}
+              <div className="lg:col-span-3 bg-white/5 border border-white/10 rounded-2xl p-6 backdrop-blur-xl flex flex-col">
+                <div className="mb-6">
+                  <h3 className="text-lg font-bold text-white flex items-center gap-2">
+                    <PieChart className="w-5 h-5 text-amber-500" />
+                    Receita Pendente por Plano
+                  </h3>
+                  <p className="text-sm text-zinc-400">Distribuição do prejuízo acumulado por categoria de assinatura.</p>
+                </div>
+
+                <div className="flex-1 flex flex-col md:flex-row items-center gap-8">
+                  <div className="w-full md:w-1/2 h-[250px]">
+                    <ResponsiveContainer width="100%" height="100%">
+                      <PieChart>
+                        <Pie data={pendingByPlanData} innerRadius={60} outerRadius={90} paddingAngle={5} dataKey="value" stroke="none">
+                          {pendingByPlanData.map((entry, index) => (
+                            <Cell key={`cell-${index}`} fill={entry.color} />
+                          ))}
+                        </Pie>
+                        <RechartsTooltip
+                          contentStyle={{ backgroundColor: '#18181b', border: '1px solid rgba(255,255,255,0.1)', borderRadius: '12px', color: '#fff' }}
+                          formatter={(value: any) => new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(value)}
+                        />
+                      </PieChart>
+                    </ResponsiveContainer>
+                  </div>
+                  
+                  <div className="w-full md:w-1/2 grid grid-cols-1 gap-3">
+                    {pendingByPlanData.map((item, index) => (
+                      <div key={index} className="flex justify-between items-center p-3 rounded-xl bg-white/[0.03] border border-white/5">
+                        <div className="flex items-center gap-3">
+                          <div className="w-3 h-3 rounded-full" style={{ backgroundColor: item.color }}></div>
+                          <span className="text-sm text-zinc-300 font-medium">{item.name}</span>
+                        </div>
+                        <span className="text-sm font-bold text-white">
+                          {new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(item.value)}
+                        </span>
+                      </div>
+                    ))}
+                    {pendingByPlanData.length === 0 && (
+                      <div className="flex items-center justify-center p-10 text-zinc-600 text-sm italic">
+                        Nenhuma receita pendente identificada.
+                      </div>
+                    )}
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            {/* Lista de Inadimplentes */}
+            <div className="bg-white/5 border border-white/10 rounded-2xl p-6 backdrop-blur-xl">
+              <div className="mb-6 flex justify-between items-center">
+                <div>
+                  <h3 className="text-lg font-bold text-white flex items-center gap-2">
+                    <Clock className="w-5 h-5 text-amber-500" />
+                    Listagem de Clientes Inadimplentes
+                  </h3>
+                  <p className="text-sm text-zinc-400">Relação detalhada para acompanhamento e contato.</p>
+                </div>
+                <div className="bg-red-500/10 text-red-400 text-xs px-3 py-1.5 rounded-full border border-red-500/20 font-bold uppercase tracking-wider">
+                  Total em Atraso: {new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(totalPendingRevenue)}
+                </div>
+              </div>
+
+              <div className="overflow-x-auto">
                 <table className="w-full text-left border-collapse">
-                  <thead className="sticky top-0 bg-[#09090b]/80 backdrop-blur z-10">
+                  <thead>
                     <tr className="text-zinc-500 text-xs uppercase tracking-wider border-b border-white/10">
-                      <th className="pb-3 font-medium">Top</th>
-                      <th className="pb-3 font-medium">Cliente</th>
-                      <th className="pb-3 font-medium hidden sm:table-cell">1º Registro</th>
-                      <th className="pb-3 font-medium text-right">Valor Gasto</th>
+                      <th className="pb-4 font-medium px-2">Cliente</th>
+                      <th className="pb-4 font-medium px-2">Data Venc.</th>
+                      <th className="pb-4 font-medium px-2">Plano</th>
+                      <th className="pb-4 font-medium px-2 text-center">Meses</th>
+                      <th className="pb-4 font-medium px-2 text-right">Dívida Total</th>
+                      <th className="pb-4 font-medium px-2 text-center">Ações</th>
                     </tr>
                   </thead>
                   <tbody>
-                    {clientRanking.map((client, index) => (
+                    {delinquencyData.map((client, index) => (
                       <tr key={index} className="border-b border-white/[0.02] hover:bg-white/[0.04] transition-colors group">
-                        <td className="py-4 text-zinc-500 text-sm font-medium w-8">
-                          {index + 1}°
+                        <td className="py-4 px-2">
+                          <p className="text-zinc-200 text-sm font-semibold">{client.name}</p>
+                          <span className="text-[10px] text-zinc-500 uppercase font-bold tracking-tighter">ID: #{Math.floor(1000 + Math.random() * 9000)}</span>
                         </td>
-                        <td className="py-4">
-                          <p className="text-zinc-200 text-sm font-medium flex items-center gap-2">
-                            {index < 3 && <Crown className={`w-3 h-3 ${index === 0 ? 'text-amber-400' : index === 1 ? 'text-zinc-400' : 'text-amber-700'}`} />}
-                            {client.name}
+                        <td className="py-4 px-2">
+                          <div className="flex items-center gap-2">
+                            <Clock className="w-3.5 h-3.5 text-zinc-500" />
+                            <span className="text-zinc-400 text-sm">{client.dueDate}</span>
+                          </div>
+                        </td>
+                        <td className="py-4 px-2">
+                          <span className="text-zinc-400 text-xs bg-white/5 px-2 py-1 rounded border border-white/5">{client.plan}</span>
+                        </td>
+                        <td className="py-4 px-2 text-center">
+                          <span className={`text-xs font-bold px-2 py-0.5 rounded-full ${client.monthsLate >= 3 ? 'bg-red-500/20 text-red-400' : 'bg-amber-500/20 text-amber-400'}`}>
+                            {client.monthsLate} {client.monthsLate === 1 ? 'Mês' : 'Meses'}
+                          </span>
+                        </td>
+                        <td className="py-4 px-2 text-right">
+                          <p className="text-white text-sm font-bold">
+                            {new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(client.totalDebt)}
                           </p>
                         </td>
-                        <td className="py-4 text-zinc-500 text-sm hidden sm:table-cell">
-                          {client.firstDateDisplay.split(' ')[0]}
-                        </td>
-                        <td className="py-4 text-right">
-                          <span className="text-amber-400/90 font-semibold text-sm">
-                            {new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(client.totalSpent)}
-                          </span>
+                        <td className="py-4 px-2 text-center">
+                          <button className="p-2 hover:bg-amber-500 hover:text-black rounded-lg transition-all text-zinc-500">
+                             <TrendingUp className="w-4 h-4" />
+                          </button>
                         </td>
                       </tr>
                     ))}
+                    {delinquencyData.length === 0 && (
+                      <tr>
+                        <td colSpan={6} className="py-20 text-center text-zinc-600 italic">
+                          Parabéns! Nenhum cliente inadimplente encontrado no momento.
+                        </td>
+                      </tr>
+                    )}
                   </tbody>
                 </table>
-              ) : (
-                <div className="flex items-center justify-center h-full text-zinc-600 text-sm bg-white/[0.02] rounded-xl border border-dashed border-white/5">
-                  Nenhum cliente registrado
-                </div>
-              )}
+              </div>
             </div>
           </div>
-        </div>
+        )}
 
       </main>
     </div>
