@@ -51,6 +51,8 @@ export default function Dashboard() {
   const [allDelinquencyData, setAllDelinquencyData] = useState<any[]>([]);
   const [delinquencyData, setDelinquencyData] = useState<DelinquentRecord[]>([]);
   const [totalPendingRevenue, setTotalPendingRevenue] = useState(0);
+  const [recoveredRevenue, setRecoveredRevenue] = useState(0);
+  const [canceledClientsCount, setCanceledClientsCount] = useState(0);
   const [pendingByPlanData, setPendingByPlanData] = useState<any[]>([]);
 
   useEffect(() => {
@@ -281,6 +283,8 @@ export default function Dashboard() {
 
   const processDelinquencyData = (data: any[]) => {
     let pendingRevenue = 0;
+    let recovered = 0;
+    let canceledCount = 0;
     const records: DelinquentRecord[] = [];
     const pendingByPlan: Record<string, number> = {};
 
@@ -291,6 +295,7 @@ export default function Dashboard() {
       const monthsKey = colNames.find(k => k.toUpperCase().includes('MENSALIDADES')) || 'MENSALIDADES EM ATRASO';
       const dueKey = colNames.find(k => k.toUpperCase().includes('VENCIMENTO')) || 'DATA VENCIMENTO';
       const statusKey = colNames.find(k => k.toUpperCase().includes('REGURALIZADO')) || 'PAGAMENTO REGURALIZADO';
+      const cancelKey = colNames.find(k => k.toUpperCase().includes('CANCELADO')) || 'CANCELADO REALIZADO';
 
       const name = row[nameKey];
       if (!name || name.trim() === '') return;
@@ -298,10 +303,7 @@ export default function Dashboard() {
       const planStr = row[planKey] || '';
       const monthsStr = row[monthsKey] || '';
       const status = row[statusKey] || '';
-
-      // Skip if regularized
-      const isRegularized = status.toUpperCase().includes('SIM') || status.toUpperCase().includes('OK');
-      if (isRegularized) return;
+      const cancelStatus = row[cancelKey] || '';
 
       // Extract plan value
       let planValue = 0;
@@ -318,6 +320,21 @@ export default function Dashboard() {
       }
 
       const totalDebt = planValue * monthsLate;
+
+      // Logic for Recovered Revenue (Column G = SIM)
+      const isRegularized = status.toUpperCase().trim() === 'SIM';
+      if (isRegularized) {
+        recovered += totalDebt;
+        return; // Skip from delinquency list
+      }
+
+      // Logic for Canceled Clients (Column I = ❌ or CANCELAMENTO REALIZADO)
+      const isCanceled = cancelStatus.includes('❌') || cancelStatus.toUpperCase().includes('CANCELAMENTO REALIZADO');
+      if (isCanceled) {
+        canceledCount++;
+        return; // Skip from delinquency list
+      }
+
       if (totalDebt > 0) {
         pendingRevenue += totalDebt;
         
@@ -338,6 +355,8 @@ export default function Dashboard() {
 
     setDelinquencyData(records.sort((a, b) => b.totalDebt - a.totalDebt));
     setTotalPendingRevenue(pendingRevenue);
+    setRecoveredRevenue(recovered);
+    setCanceledClientsCount(canceledCount);
 
     const colors = ['#f59e0b', '#3b82f6', '#10b981', '#ef4444', '#8b5cf6'];
     const sortedPlans = Object.entries(pendingByPlan)
@@ -780,6 +799,32 @@ export default function Dashboard() {
                   <div className="mt-4 flex items-center gap-2">
                     <span className="text-xs text-zinc-500 font-medium">Ações de cobrança recomendadas</span>
                   </div>
+                </div>
+
+                <div className="relative overflow-hidden bg-white/5 border border-white/10 rounded-2xl p-6 backdrop-blur-xl group hover:bg-white/[0.07] transition-colors">
+                  <div className="flex justify-between items-start mb-4">
+                    <h3 className="text-zinc-400 font-medium text-sm tracking-wide uppercase">Receita Recuperada</h3>
+                    <div className="bg-emerald-500/10 p-2 rounded-lg text-emerald-400">
+                      <CheckCircle2 className="w-5 h-5" />
+                    </div>
+                  </div>
+                  <div className="text-3xl font-bold text-white tracking-tight">
+                    {new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(recoveredRevenue)}
+                  </div>
+                  <p className="text-xs text-zinc-500 mt-2 font-medium">No mês atual</p>
+                </div>
+
+                <div className="relative overflow-hidden bg-white/5 border border-white/10 rounded-2xl p-6 backdrop-blur-xl group hover:bg-white/[0.07] transition-colors">
+                  <div className="flex justify-between items-start mb-4">
+                    <h3 className="text-zinc-400 font-medium text-sm tracking-wide uppercase">Clientes Cancelados</h3>
+                    <div className="bg-zinc-500/10 p-2 rounded-lg text-zinc-400">
+                      <Users className="w-5 h-5" />
+                    </div>
+                  </div>
+                  <div className="text-3xl font-bold text-white tracking-tight">
+                    {canceledClientsCount}
+                  </div>
+                  <p className="text-xs text-zinc-500 mt-2 font-medium">No mês atual</p>
                 </div>
 
                 <div className="relative overflow-hidden bg-white/5 border border-white/10 rounded-2xl p-6 backdrop-blur-xl group hover:bg-white/[0.07] transition-colors">
