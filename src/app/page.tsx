@@ -50,6 +50,8 @@ export default function Dashboard() {
   const [activeTab, setActiveTab] = useState<'geral' | 'inadimplentes'>('geral');
   const [allDelinquencyData, setAllDelinquencyData] = useState<any[]>([]);
   const [delinquencyData, setDelinquencyData] = useState<DelinquentRecord[]>([]);
+  const [recoveredData, setRecoveredData] = useState<DelinquentRecord[]>([]);
+  const [canceledData, setCanceledData] = useState<DelinquentRecord[]>([]);
   const [totalPendingRevenue, setTotalPendingRevenue] = useState(0);
   const [recoveredRevenue, setRecoveredRevenue] = useState(0);
   const [canceledClientsCount, setCanceledClientsCount] = useState(0);
@@ -286,6 +288,8 @@ export default function Dashboard() {
     let recovered = 0;
     let canceledCount = 0;
     const records: DelinquentRecord[] = [];
+    const recoveredList: DelinquentRecord[] = [];
+    const canceledList: DelinquentRecord[] = [];
     const pendingByPlan: Record<string, number> = {};
 
     data.forEach(row => {
@@ -325,6 +329,14 @@ export default function Dashboard() {
       const isRegularized = status.toUpperCase().trim() === 'SIM';
       if (isRegularized) {
         recovered += totalDebt;
+        recoveredList.push({
+          name: name.trim(),
+          dueDate: row[dueKey] || 'N/A',
+          plan: planStr.split('R$')[0].trim() || 'Outros',
+          monthsLate,
+          totalDebt,
+          status: 'Pago'
+        });
         return; // Skip from delinquency list
       }
 
@@ -332,6 +344,14 @@ export default function Dashboard() {
       const isCanceled = cancelStatus.includes('❌') || cancelStatus.toUpperCase().includes('CANCELAMENTO REALIZADO');
       if (isCanceled) {
         canceledCount++;
+        canceledList.push({
+          name: name.trim(),
+          dueDate: row[dueKey] || 'N/A',
+          plan: planStr.split('R$')[0].trim() || 'Outros',
+          monthsLate,
+          totalDebt,
+          status: 'Cancelado'
+        });
         return; // Skip from delinquency list
       }
 
@@ -354,6 +374,8 @@ export default function Dashboard() {
     });
 
     setDelinquencyData(records.sort((a, b) => b.totalDebt - a.totalDebt));
+    setRecoveredData(recoveredList);
+    setCanceledData(canceledList);
     setTotalPendingRevenue(pendingRevenue);
     setRecoveredRevenue(recovered);
     setCanceledClientsCount(canceledCount);
@@ -959,6 +981,99 @@ export default function Dashboard() {
                     )}
                   </tbody>
                 </table>
+              </div>
+            </div>
+            
+            {/* Listas de Recuperados e Cancelados */}
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 mt-10">
+              {/* Clientes Recuperados */}
+              <div className="bg-white/5 border border-white/10 rounded-2xl p-6 backdrop-blur-xl">
+                <div className="mb-6">
+                  <h3 className="text-lg font-bold text-white flex items-center gap-2">
+                    <CheckCircle2 className="w-5 h-5 text-emerald-500" />
+                    Clientes Recuperados no Mês
+                  </h3>
+                  <p className="text-sm text-zinc-400">Clientes que regularizaram suas pendências.</p>
+                </div>
+                <div className="overflow-x-auto max-h-[400px] overflow-y-auto pr-2 [&::-webkit-scrollbar]:w-2 [&::-webkit-scrollbar-track]:bg-transparent [&::-webkit-scrollbar-thumb]:bg-white/10 [&::-webkit-scrollbar-thumb]:rounded-full">
+                  <table className="w-full text-left border-collapse">
+                    <thead>
+                      <tr className="text-zinc-500 text-xs uppercase tracking-wider border-b border-white/10">
+                        <th className="pb-4 font-medium px-2">Cliente</th>
+                        <th className="pb-4 font-medium px-2">Plano</th>
+                        <th className="pb-4 font-medium px-2 text-right">Valor Recup.</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {recoveredData.map((client, index) => (
+                        <tr key={index} className="border-b border-white/[0.02] hover:bg-white/[0.04] transition-colors">
+                          <td className="py-4 px-2">
+                            <p className="text-zinc-200 text-sm font-semibold">{client.name}</p>
+                          </td>
+                          <td className="py-4 px-2">
+                            <span className="text-zinc-400 text-xs">{client.plan}</span>
+                          </td>
+                          <td className="py-4 px-2 text-right">
+                            <p className="text-emerald-400 text-sm font-bold">
+                              {new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(client.totalDebt)}
+                            </p>
+                          </td>
+                        </tr>
+                      ))}
+                      {recoveredData.length === 0 && (
+                        <tr>
+                          <td colSpan={3} className="py-10 text-center text-zinc-600 italic text-sm">
+                            Nenhum cliente recuperado ainda neste mês.
+                          </td>
+                        </tr>
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+
+              {/* Clientes Cancelados */}
+              <div className="bg-white/5 border border-white/10 rounded-2xl p-6 backdrop-blur-xl">
+                <div className="mb-6">
+                  <h3 className="text-lg font-bold text-white flex items-center gap-2">
+                    <AlertTriangle className="w-5 h-5 text-zinc-400" />
+                    Clientes Cancelados no Mês
+                  </h3>
+                  <p className="text-sm text-zinc-400">Contratos encerrados no período atual.</p>
+                </div>
+                <div className="overflow-x-auto max-h-[400px] overflow-y-auto pr-2 [&::-webkit-scrollbar]:w-2 [&::-webkit-scrollbar-track]:bg-transparent [&::-webkit-scrollbar-thumb]:bg-white/10 [&::-webkit-scrollbar-thumb]:rounded-full">
+                  <table className="w-full text-left border-collapse">
+                    <thead>
+                      <tr className="text-zinc-500 text-xs uppercase tracking-wider border-b border-white/10">
+                        <th className="pb-4 font-medium px-2">Cliente</th>
+                        <th className="pb-4 font-medium px-2">Plano</th>
+                        <th className="pb-4 font-medium px-2 text-center">Meses Atraso</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {canceledData.map((client, index) => (
+                        <tr key={index} className="border-b border-white/[0.02] hover:bg-white/[0.04] transition-colors">
+                          <td className="py-4 px-2">
+                            <p className="text-zinc-200 text-sm font-semibold">{client.name}</p>
+                          </td>
+                          <td className="py-4 px-2">
+                            <span className="text-zinc-400 text-xs">{client.plan}</span>
+                          </td>
+                          <td className="py-4 px-2 text-center">
+                            <span className="text-zinc-400 text-xs">{client.monthsLate}</span>
+                          </td>
+                        </tr>
+                      ))}
+                      {canceledData.length === 0 && (
+                        <tr>
+                          <td colSpan={3} className="py-10 text-center text-zinc-600 italic text-sm">
+                            Nenhum cancelamento registrado este mês.
+                          </td>
+                        </tr>
+                      )}
+                    </tbody>
+                  </table>
+                </div>
               </div>
             </div>
           </div>
