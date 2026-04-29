@@ -7,8 +7,8 @@ import {
 import { Scissors, Users, DollarSign, TrendingUp, Loader2, Info, Crown, CreditCard, Calendar, AlertTriangle, LayoutDashboard, Clock, CheckCircle2 } from 'lucide-react';
 import Papa from 'papaparse';
 
-const SHEET_URL = "https://docs.google.com/spreadsheets/d/1GmYrrCJWdc2kLGNxEdTJSsdZ-6H8Y_md9GsK5svSjlo/export?format=csv&gid=545750877";
-const INADIMPLENTES_SHEET_URL = "https://docs.google.com/spreadsheets/d/1GmYrrCJWdc2kLGNxEdTJSsdZ-6H8Y_md9GsK5svSjlo/export?format=csv&gid=163897643";
+const SHEET_URL = `https://docs.google.com/spreadsheets/d/1GmYrrCJWdc2kLGNxEdTJSsdZ-6H8Y_md9GsK5svSjlo/export?format=csv&gid=545750877&t=${Date.now()}`;
+const INADIMPLENTES_SHEET_URL = `https://docs.google.com/spreadsheets/d/1GmYrrCJWdc2kLGNxEdTJSsdZ-6H8Y_md9GsK5svSjlo/export?format=csv&gid=163897643&t=${Date.now()}`;
 
 interface ClientRecord {
   name: string;
@@ -25,6 +25,7 @@ interface DelinquentRecord {
   monthsLate: number;
   totalDebt: number;
   status: string;
+  cancellationReason?: string;
 }
 
 export default function Dashboard() {
@@ -298,16 +299,28 @@ export default function Dashboard() {
       const planKey = colNames.find(k => k.toUpperCase().includes('PLANO')) || 'PLANO DE ASSINATURA';
       const monthsKey = colNames.find(k => k.toUpperCase().includes('MENSALIDADES')) || 'MENSALIDADES EM ATRASO';
       const dueKey = colNames.find(k => k.toUpperCase().includes('VENCIMENTO')) || 'DATA VENCIMENTO';
-      const statusKey = colNames.find(k => k.toUpperCase().includes('REGURALIZADO')) || 'PAGAMENTO REGURALIZADO';
+      const statusKey = colNames.find(k => {
+        const s = k.toUpperCase();
+        return s.includes('REGULARIZADO') || s.includes('REGURALIZADO') || s.includes('STATUS') || (s.includes('PAG') && s.includes('OK'));
+      }) || 'PAGAMENTO REGULARIZADO';
       const cancelKey = colNames.find(k => k.toUpperCase().includes('CANCELADO')) || 'CANCELADO REALIZADO';
+      const reasonKey = colNames.find(k => k.toUpperCase().includes('MOTIVO')) || 'MOTIVO DO CANCELAMENTO';
 
       const name = row[nameKey];
       if (!name || name.trim() === '') return;
 
       const planStr = row[planKey] || '';
       const monthsStr = row[monthsKey] || '';
-      const status = row[statusKey] || '';
+      let status = row[statusKey] || '';
+      
+      // Fallback para Coluna G (índice 6) caso o nome da coluna mude
+      if (!status && colNames.length > 6) {
+        const fallbackStatus = row[colNames[6]];
+        if (fallbackStatus) status = fallbackStatus;
+      }
+      
       const cancelStatus = row[cancelKey] || '';
+      const cancellationReason = row[reasonKey] || '';
 
       // Extract plan value
       let planValue = 0;
@@ -323,25 +336,41 @@ export default function Dashboard() {
         monthsLate = parseInt(monthMatch[1]);
       }
 
-      const totalDebt = planValue * monthsLate;
+      let totalDebt = planValue * monthsLate;
+      
+      // Se a dívida for 0, tenta buscar numa coluna que contenha "TOTAL" ou "DÍVIDA"
+      if (totalDebt === 0) {
+        const debtKey = colNames.find(k => k.toUpperCase().includes('DÍVIDA') || k.toUpperCase().includes('TOTAL')) || '';
+        if (debtKey) {
+          const debtVal = row[debtKey] || '';
+          const m = debtVal.match(/R\$\s*([\d,.]+)/) || debtVal.match(/([\d,.]+)/);
+          if (m) totalDebt = parseFloat(m[1].replace(/\./g, '').replace(',', '.'));
+        }
+      }
 
       // Logic for Recovered Revenue (Column G = SIM)
-      const isRegularized = status.toUpperCase().trim() === 'SIM';
+      const statusUpper = status.toUpperCase().trim();
+      const isRegularized = statusUpper === 'SIM' || statusUpper === 'PAGO' || statusUpper === 'OK' || statusUpper === 'SIM!';
+      
       if (isRegularized) {
+        // Se ainda for 0 mas está regularizado, assume o valor do plano (mínimo de 1 mês)
+        if (totalDebt === 0) totalDebt = planValue;
+        
         recovered += totalDebt;
         recoveredList.push({
           name: name.trim(),
           dueDate: row[dueKey] || 'N/A',
           plan: planStr.split('R$')[0].trim() || 'Outros',
-          monthsLate,
-          totalDebt,
+          monthsLate: monthsLate > 0 ? monthsLate : 1,
+          totalDebt: totalDebt,
           status: 'Pago'
         });
         return; // Skip from delinquency list
       }
 
-      // Logic for Canceled Clients (Column I = ❌ or CANCELAMENTO REALIZADO)
-      const isCanceled = cancelStatus.includes('❌') || cancelStatus.toUpperCase().includes('CANCELAMENTO REALIZADO');
+      // Logic for Canceled Clients (Column I = ❌ or CANCELAMENTO REALIZADO or Reason exists)
+      const isCanceled = cancelStatus.includes('❌') || cancelStatus.toUpperCase().includes('CANCELAMENTO REALIZADO') || (cancellationReason && cancellationReason.trim() !== '' && cancellationReason !== 'MOTIVO DO CANCELAMENTO');
+      
       if (isCanceled) {
         canceledCount++;
         canceledList.push({
@@ -350,7 +379,8 @@ export default function Dashboard() {
           plan: planStr.split('R$')[0].trim() || 'Outros',
           monthsLate,
           totalDebt,
-          status: 'Cancelado'
+          status: 'Cancelado',
+          cancellationReason: cancellationReason !== 'MOTIVO DO CANCELAMENTO' ? cancellationReason : ''
         });
         return; // Skip from delinquency list
       }
@@ -1048,6 +1078,7 @@ export default function Dashboard() {
                         <th className="pb-4 font-medium px-2">Cliente</th>
                         <th className="pb-4 font-medium px-2">Plano</th>
                         <th className="pb-4 font-medium px-2 text-center">Meses Atraso</th>
+                        <th className="pb-4 font-medium px-2 text-right">Motivo</th>
                       </tr>
                     </thead>
                     <tbody>
@@ -1062,11 +1093,21 @@ export default function Dashboard() {
                           <td className="py-4 px-2 text-center">
                             <span className="text-zinc-400 text-xs">{client.monthsLate}</span>
                           </td>
+                          <td className="py-4 px-2 text-right">
+                            <span className={`text-[10px] px-2 py-1 rounded-full border ${
+                              client.cancellationReason?.toLowerCase().includes('insatisfação') ? 'bg-red-500/10 text-red-400 border-red-500/20' :
+                              client.cancellationReason?.toLowerCase().includes('financeiro') ? 'bg-amber-500/10 text-amber-400 border-amber-500/20' :
+                              client.cancellationReason?.toLowerCase().includes('mudança') ? 'bg-blue-500/10 text-blue-400 border-blue-500/20' :
+                              'bg-zinc-500/10 text-zinc-400 border-zinc-500/20'
+                            } font-bold uppercase tracking-wider`}>
+                              {client.cancellationReason || 'Não informado'}
+                            </span>
+                          </td>
                         </tr>
                       ))}
                       {canceledData.length === 0 && (
                         <tr>
-                          <td colSpan={3} className="py-10 text-center text-zinc-600 italic text-sm">
+                          <td colSpan={4} className="py-10 text-center text-zinc-600 italic text-sm">
                             Nenhum cancelamento registrado este mês.
                           </td>
                         </tr>
