@@ -76,20 +76,28 @@ export default function Dashboard() {
       })
       .catch((error) => console.error("Erro ao baixar dados da planilha Geral:", error));
 
-    // Fetch Delinquency Data from all 3 related tabs
+    // Fetch Delinquency Data from all 3 related tabs with individual error handling
+    const fetchSheet = (url: string, sourceName: string) => 
+      fetch(url)
+        .then(r => r.ok ? r.text() : Promise.reject(`HTTP ${r.status}`))
+        .then(csv => {
+          const { data } = Papa.parse(csv, { header: true, skipEmptyLines: true });
+          return data.map((r: any) => ({ ...r, _sheetSource: sourceName }));
+        })
+        .catch(err => {
+          console.error(`Erro ao buscar aba ${sourceName}:`, err);
+          return [];
+        });
+
     Promise.all([
-      fetch(INADIMPLENTES_SHEET_URL).then(r => r.text()),
-      fetch(RECUPERADOS_SHEET_URL).then(r => r.text()),
-      fetch(CANCELADOS_SHEET_URL).then(r => r.text())
-    ]).then(([inadCsv, recCsv, canCsv]) => {
-      const inadData = Papa.parse(inadCsv, { header: true, skipEmptyLines: true }).data;
-      const recData = Papa.parse(recCsv, { header: true, skipEmptyLines: true }).data.map((r: any) => ({ ...r, _sheetSource: 'Recuperados' }));
-      const canData = Papa.parse(canCsv, { header: true, skipEmptyLines: true }).data.map((r: any) => ({ ...r, _sheetSource: 'Cancelados' }));
-      
+      fetchSheet(INADIMPLENTES_SHEET_URL, 'Inadimplentes'),
+      fetchSheet(RECUPERADOS_SHEET_URL, 'Recuperados'),
+      fetchSheet(CANCELADOS_SHEET_URL, 'Cancelados')
+    ]).then(([inadData, recData, canData]) => {
       setAllDelinquencyData([...inadData, ...recData, ...canData]);
       setLoading(false);
     }).catch(err => {
-      console.error("Erro ao carregar dados de inadimplência:", err);
+      console.error("Erro fatal no carregamento de inadimplência:", err);
       setLoading(false);
     });
   }, []);
@@ -290,32 +298,49 @@ export default function Dashboard() {
 
     data.forEach(row => {
       const colNames = Object.keys(row);
-      const nameKey = colNames.find(k => k.toUpperCase().includes('NOME')) || 'NOME';
-      const planKey = colNames.find(k => k.toUpperCase().includes('PLANO')) || 'PLANO DE ASSINATURA';
-      const monthsKey = colNames.find(k => k.toUpperCase().includes('MENSALIDADES')) || 'MENSALIDADES EM ATRASO';
-      const dueKey = colNames.find(k => k.toUpperCase().includes('VENCIMENTO')) || 'DATA VENCIMENTO';
+      const source = (row as any)._sheetSource || '';
+
+      // --- Mapeamento de chaves dinâmico e resiliente ---
+      const nameKey = colNames.find(k => k.toUpperCase().includes('NOME')) || colNames[1] || '';
+      const planKey = colNames.find(k => k.toUpperCase().includes('PLANO')) || colNames[4] || '';
+      const monthsKey = colNames.find(k => k.toUpperCase().includes('MENSALIDADES')) || colNames[5] || '';
+      const dueKey = colNames.find(k => k.toUpperCase().includes('VENCIMENTO')) || colNames[0] || '';
+
+      // BUG FIX: Usar '.includes(REGURALIZADO)' ou 'REGULARIZADO' mas NÃO 'STATUS' genérico
+      // que pode conflitar com coluna STATUS: da aba geral
       const statusKey = colNames.find(k => {
         const s = k.toUpperCase();
-        return s.includes('REGULARIZADO') || s.includes('REGURALIZADO') || s.includes('STATUS') || (s.includes('PAG') && s.includes('OK'));
-      }) || 'PAGAMENTO REGULARIZADO';
-      const cancelKey = colNames.find(k => k.toUpperCase().includes('CANCELADO')) || 'CANCELADO REALIZADO';
-      const reasonKey = colNames.find(k => k.toUpperCase().includes('MOTIVO')) || 'MOTIVO DO CANCELAMENTO';
+        return s.includes('REGULARIZADO') || s.includes('REGURALIZADO');
+      }) || colNames[6] || '';
 
-      const name = row[nameKey];
-      if (!name || name.trim() === '') return;
+      const cancelKey = colNames.find(k => {
+        const s = k.toUpperCase();
+        return s.includes('CANCELADO') && !s.includes('MOTIVO');
+      }) || colNames[8] || '';
 
-      const planStr = row[planKey] || '';
-      const monthsStr = row[monthsKey] || '';
-      let status = row[statusKey] || '';
-      
-      // Fallback para Coluna G (índice 6) caso o nome da coluna mude
+      // BUG FIX PRINCIPAL: Usar 'CANCELAMENTO' (não 'MOTIVO') para não capturar
+      // a coluna 'MOTIVO DA INADIMPÊNCIA:' que existe na aba Inadimplentes.
+      // Antes era: includes('MOTIVO') → pegava 'MOTIVO DA INADIMPÊNCIA:' primeiro,
+      // fazendo TODOS os inadimplentes parecerem cancelados.
+      const reasonKey = colNames.find(k => k.toUpperCase().includes('CANCELAMENTO') && k.toUpperCase().includes('MOTIVO')) || colNames[9] || '';
+
+      // Para aba Recuperados que tem headers malformados (células vazias),
+      // usamos fallback por índice
+      const name = row[nameKey] || (source === 'Recuperados' ? Object.values(row)[1] : '') as string;
+      if (!name || (name as string).trim() === '') return;
+
+      const planStr = (row[planKey] || (source === 'Recuperados' ? Object.values(row)[4] : '') || '') as string;
+      const monthsStr = (row[monthsKey] || (source === 'Recuperados' ? Object.values(row)[5] : '') || '') as string;
+      let status = (row[statusKey] || (source === 'Recuperados' ? Object.values(row)[6] : '') || '') as string;
+
+      // Fallback para Coluna G (índice 6) caso o nome da coluna ainda seja vazio
       if (!status && colNames.length > 6) {
         const fallbackStatus = row[colNames[6]];
-        if (fallbackStatus) status = fallbackStatus;
+        if (fallbackStatus) status = fallbackStatus as string;
       }
-      
-      const cancelStatus = row[cancelKey] || '';
-      const cancellationReason = row[reasonKey] || '';
+
+      const cancelStatus = (row[cancelKey] || '') as string;
+      const cancellationReason = (row[reasonKey] || '') as string;
 
       // Extract plan value
       let planValue = 0;
@@ -344,8 +369,8 @@ export default function Dashboard() {
       }
 
       // Logic for Recovered Revenue (Column G = SIM or from Recovered sheet)
-      const statusUpper = status.toUpperCase().trim();
-      const isRegularized = statusUpper === 'SIM' || statusUpper === 'PAGO' || statusUpper === 'OK' || statusUpper === 'SIM!' || (row as any)._sheetSource === 'Recuperados';
+      const statusUpper = (status as string).toUpperCase().trim();
+      const isRegularized = statusUpper === 'SIM' || statusUpper === 'PAGO' || statusUpper === 'OK' || statusUpper === 'SIM!' || source === 'Recuperados';
       
       if (isRegularized) {
         // Se ainda for 0 mas está regularizado, assume o valor do plano (mínimo de 1 mês)
@@ -353,8 +378,8 @@ export default function Dashboard() {
         
         recovered += totalDebt;
         recoveredList.push({
-          name: name.trim(),
-          dueDate: row[dueKey] || 'N/A',
+          name: (name as string).trim(),
+          dueDate: (row[dueKey] || 'N/A') as string,
           plan: planStr.split('R$')[0].trim() || 'Outros',
           monthsLate: monthsLate > 0 ? monthsLate : 1,
           totalDebt: totalDebt,
@@ -363,37 +388,45 @@ export default function Dashboard() {
         return; // Skip from delinquency list
       }
 
-      // Logic for Canceled Clients (Column I = ❌ or CANCELAMENTO REALIZADO or Reason exists or from Canceled sheet)
-      const isCanceled = cancelStatus.includes('❌') || cancelStatus.toUpperCase().includes('CANCELAMENTO REALIZADO') || (cancellationReason && cancellationReason.trim() !== '' && cancellationReason !== 'MOTIVO DO CANCELAMENTO') || (row as any)._sheetSource === 'Cancelados';
+      // Logic for Canceled Clients:
+      // BUG FIX: Verificar apenas ❌ ou texto específico de cancelamento.
+      // NÃO usar 'cancellationReason' como critério pois 'MOTIVO DA INADIMPÊNCIA:'
+      // sempre tem valor e causaria falsos positivos.
+      const isCanceled = cancelStatus.includes('❌') || 
+        cancelStatus.toUpperCase().includes('CANCELAMENTO REALIZADO') || 
+        source === 'Cancelados';
       
       if (isCanceled) {
         canceledCount++;
         canceledList.push({
-          name: name.trim(),
-          dueDate: row[dueKey] || 'N/A',
+          name: (name as string).trim(),
+          dueDate: (row[dueKey] || 'N/A') as string,
           plan: planStr.split('R$')[0].trim() || 'Outros',
           monthsLate,
           totalDebt,
           status: 'Cancelado',
-          cancellationReason: cancellationReason !== 'MOTIVO DO CANCELAMENTO' ? cancellationReason : ''
+          cancellationReason: cancellationReason && cancellationReason !== 'MOTIVO DO CANCELAMENTO' ? cancellationReason : ''
         });
         return; // Skip from delinquency list
       }
 
-      if (totalDebt > 0) {
-        pendingRevenue += totalDebt;
+      // Clientes genuinamente inadimplentes: NÂO regularizado, NÂO cancelado
+      // Incluir mesmo se totalDebt === 0 (mínimo 1 mês do plano)
+      const effectiveDebt = totalDebt > 0 ? totalDebt : planValue;
+      if (effectiveDebt > 0) {
+        pendingRevenue += effectiveDebt;
         
         // Group by plan name (simplified)
         const planName = planStr.split('R$')[0].trim() || 'Outros';
-        pendingByPlan[planName] = (pendingByPlan[planName] || 0) + totalDebt;
+        pendingByPlan[planName] = (pendingByPlan[planName] || 0) + effectiveDebt;
 
         records.push({
-          name: name.trim(),
-          dueDate: row[dueKey] || 'N/A',
+          name: (name as string).trim(),
+          dueDate: (row[dueKey] || 'N/A') as string,
           plan: planName,
-          monthsLate,
-          totalDebt,
-          status: status || 'Pendente'
+          monthsLate: monthsLate > 0 ? monthsLate : 1,
+          totalDebt: effectiveDebt,
+          status: (status as string) || 'Pendente'
         });
       }
     });
