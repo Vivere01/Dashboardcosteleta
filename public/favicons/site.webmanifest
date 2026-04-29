@@ -1,0 +1,15 @@
+{
+  "name": "Dashboard Costeleta",
+  "short_name": "Costeleta",
+  "icons": [
+    {
+      "src": "/favicons/favicon-16x16.png",
+      "sizes": "16x16",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ],
+  "theme_color": "#f59e0b",
+  "background_color": "#09090b",
+  "display": "standalone"
+}

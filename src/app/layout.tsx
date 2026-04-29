@@ -15,6 +15,11 @@ const geistMono = Geist_Mono({
 export const metadata: Metadata = {
   title: "Dashboard Costeleta",
   description: "Painel de controle administrativo da Barbearia Costeleta",
+  icons: {
+    icon: '/favicons/favicon-16x16.png',
+    apple: '/favicons/favicon-16x16.png',
+  },
+  manifest: '/favicons/site.webmanifest',
 };
 
 export default function RootLayout({
