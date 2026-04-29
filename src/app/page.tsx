@@ -9,6 +9,8 @@ import Papa from 'papaparse';
 
 const SHEET_URL = `https://docs.google.com/spreadsheets/d/1GmYrrCJWdc2kLGNxEdTJSsdZ-6H8Y_md9GsK5svSjlo/export?format=csv&gid=545750877&t=${Date.now()}`;
 const INADIMPLENTES_SHEET_URL = `https://docs.google.com/spreadsheets/d/1GmYrrCJWdc2kLGNxEdTJSsdZ-6H8Y_md9GsK5svSjlo/export?format=csv&gid=163897643&t=${Date.now()}`;
+const CANCELADOS_SHEET_URL = `https://docs.google.com/spreadsheets/d/1GmYrrCJWdc2kLGNxEdTJSsdZ-6H8Y_md9GsK5svSjlo/export?format=csv&gid=2021546151&t=${Date.now()}`;
+const RECUPERADOS_SHEET_URL = `https://docs.google.com/spreadsheets/d/1GmYrrCJWdc2kLGNxEdTJSsdZ-6H8Y_md9GsK5svSjlo/export?format=csv&gid=1475625733&t=${Date.now()}`;
 
 interface ClientRecord {
   name: string;
@@ -59,6 +61,8 @@ export default function Dashboard() {
   const [pendingByPlanData, setPendingByPlanData] = useState<any[]>([]);
 
   useEffect(() => {
+    setLoading(true);
+
     // Fetch General Data
     fetch(SHEET_URL)
       .then(res => res.text())
@@ -66,37 +70,28 @@ export default function Dashboard() {
         Papa.parse(csvText, {
           header: true,
           skipEmptyLines: true,
-          complete: (results) => {
-            setAllData(results.data);
-          },
-          error: (error: Error) => {
-            console.error("Erro ao fazer parse do CSV Geral:", error);
-          }
+          complete: (results) => setAllData(results.data),
+          error: (error: Error) => console.error("Erro ao fazer parse do CSV Geral:", error)
         });
       })
       .catch((error) => console.error("Erro ao baixar dados da planilha Geral:", error));
 
-    // Fetch Delinquency Data
-    fetch(INADIMPLENTES_SHEET_URL)
-      .then(res => res.text())
-      .then(csvText => {
-        Papa.parse(csvText, {
-          header: true,
-          skipEmptyLines: true,
-          complete: (results) => {
-            setAllDelinquencyData(results.data);
-            setLoading(false);
-          },
-          error: (error: Error) => {
-            console.error("Erro ao fazer parse do CSV Inadimplentes:", error);
-            setLoading(false);
-          }
-        });
-      })
-      .catch((error) => {
-        console.error("Erro ao baixar dados da planilha Inadimplentes:", error);
-        setLoading(false);
-      });
+    // Fetch Delinquency Data from all 3 related tabs
+    Promise.all([
+      fetch(INADIMPLENTES_SHEET_URL).then(r => r.text()),
+      fetch(RECUPERADOS_SHEET_URL).then(r => r.text()),
+      fetch(CANCELADOS_SHEET_URL).then(r => r.text())
+    ]).then(([inadCsv, recCsv, canCsv]) => {
+      const inadData = Papa.parse(inadCsv, { header: true, skipEmptyLines: true }).data;
+      const recData = Papa.parse(recCsv, { header: true, skipEmptyLines: true }).data.map((r: any) => ({ ...r, _sheetSource: 'Recuperados' }));
+      const canData = Papa.parse(canCsv, { header: true, skipEmptyLines: true }).data.map((r: any) => ({ ...r, _sheetSource: 'Cancelados' }));
+      
+      setAllDelinquencyData([...inadData, ...recData, ...canData]);
+      setLoading(false);
+    }).catch(err => {
+      console.error("Erro ao carregar dados de inadimplência:", err);
+      setLoading(false);
+    });
   }, []);
 
   useEffect(() => {
@@ -348,9 +343,9 @@ export default function Dashboard() {
         }
       }
 
-      // Logic for Recovered Revenue (Column G = SIM)
+      // Logic for Recovered Revenue (Column G = SIM or from Recovered sheet)
       const statusUpper = status.toUpperCase().trim();
-      const isRegularized = statusUpper === 'SIM' || statusUpper === 'PAGO' || statusUpper === 'OK' || statusUpper === 'SIM!';
+      const isRegularized = statusUpper === 'SIM' || statusUpper === 'PAGO' || statusUpper === 'OK' || statusUpper === 'SIM!' || (row as any)._sheetSource === 'Recuperados';
       
       if (isRegularized) {
         // Se ainda for 0 mas está regularizado, assume o valor do plano (mínimo de 1 mês)
@@ -368,8 +363,8 @@ export default function Dashboard() {
         return; // Skip from delinquency list
       }
 
-      // Logic for Canceled Clients (Column I = ❌ or CANCELAMENTO REALIZADO or Reason exists)
-      const isCanceled = cancelStatus.includes('❌') || cancelStatus.toUpperCase().includes('CANCELAMENTO REALIZADO') || (cancellationReason && cancellationReason.trim() !== '' && cancellationReason !== 'MOTIVO DO CANCELAMENTO');
+      // Logic for Canceled Clients (Column I = ❌ or CANCELAMENTO REALIZADO or Reason exists or from Canceled sheet)
+      const isCanceled = cancelStatus.includes('❌') || cancelStatus.toUpperCase().includes('CANCELAMENTO REALIZADO') || (cancellationReason && cancellationReason.trim() !== '' && cancellationReason !== 'MOTIVO DO CANCELAMENTO') || (row as any)._sheetSource === 'Cancelados';
       
       if (isCanceled) {
         canceledCount++;
