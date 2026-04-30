@@ -112,7 +112,7 @@ export default function Dashboard() {
     if (allDelinquencyData.length > 0) {
       processDelinquencyData(allDelinquencyData);
     }
-  }, [allDelinquencyData]);
+  }, [allDelinquencyData, startDate, endDate]);
 
   const processData = (data: any[]) => {
     let totalRevenue = 0;
@@ -306,6 +306,8 @@ export default function Dashboard() {
       const monthsKey = colNames.find(k => k.toUpperCase().includes('MENSALIDADES')) || colNames[5] || '';
       const dueKey = colNames.find(k => k.toUpperCase().includes('VENCIMENTO')) || colNames[0] || '';
 
+      // The date filtering has been moved down to respect specific status dates (Pagamento/Cancelamento)
+
       // BUG FIX: Usar '.includes(REGURALIZADO)' ou 'REGULARIZADO' mas NÃO 'STATUS' genérico
       // que pode conflitar com coluna STATUS: da aba geral
       const statusKey = colNames.find(k => {
@@ -368,10 +370,55 @@ export default function Dashboard() {
         }
       }
 
+      // Identify columns for payment/cancellation dates (if the user creates them in the spreadsheet)
+      const paymentDateKey = colNames.find(k => {
+        const up = k.toUpperCase();
+        return up.includes('PAGAMENTO') || up.includes('REGULARIZA');
+      }) || '';
+      const cancelDateKey = colNames.find(k => k.toUpperCase().includes('CANCELAMENTO') && k.toUpperCase().includes('DATA')) || '';
+
+      const dueDateRaw = (row[dueKey] || '') as string;
+
+      // Helper to parse DD/MM/YYYY to YYYY-MM-DD
+      const parseDateToISO = (dateStr: string) => {
+        if (!dateStr || dateStr.trim() === '') return '';
+        const parts = dateStr.split(' ')[0].split('/');
+        if (parts.length === 3) {
+          const d = parts[0].padStart(2, '0');
+          const m = parts[1].padStart(2, '0');
+          const y = parts[2];
+          return `${y}-${m}-${d}`;
+        }
+        return '';
+      };
+
+      const dueIsoDate = parseDateToISO(dueDateRaw);
+
       // Logic for Recovered Revenue (Column G = SIM or from Recovered sheet)
       const statusUpper = (status as string).toUpperCase().trim();
       const isRegularized = statusUpper === 'SIM' || statusUpper === 'PAGO' || statusUpper === 'OK' || statusUpper === 'SIM!' || source === 'Recuperados';
       
+      // Logic for Canceled Clients
+      const isCanceled = cancelStatus.includes('❌') || 
+        cancelStatus.toUpperCase().includes('CANCELAMENTO REALIZADO') || 
+        source === 'Cancelados';
+
+      // --- DATE FILTERING LOGIC ---
+      // Decide which date to use for filtering based on the row's status
+      let relevantIsoDate = dueIsoDate; // Fallback is always the due date
+
+      if (isRegularized && paymentDateKey && row[paymentDateKey]) {
+        relevantIsoDate = parseDateToISO(row[paymentDateKey] as string) || dueIsoDate;
+      } else if (isCanceled && cancelDateKey && row[cancelDateKey]) {
+        relevantIsoDate = parseDateToISO(row[cancelDateKey] as string) || dueIsoDate;
+      }
+
+      // Apply the date filter using the relevant date
+      if (startDate && relevantIsoDate && relevantIsoDate < startDate) return;
+      if (endDate && relevantIsoDate && relevantIsoDate > endDate) return;
+      if ((startDate || endDate) && !relevantIsoDate) return;
+      // ----------------------------
+
       if (isRegularized) {
         // Se ainda for 0 mas está regularizado, assume o valor do plano (mínimo de 1 mês)
         if (totalDebt === 0) totalDebt = planValue;
@@ -388,14 +435,6 @@ export default function Dashboard() {
         return; // Skip from delinquency list
       }
 
-      // Logic for Canceled Clients:
-      // BUG FIX: Verificar apenas ❌ ou texto específico de cancelamento.
-      // NÃO usar 'cancellationReason' como critério pois 'MOTIVO DA INADIMPÊNCIA:'
-      // sempre tem valor e causaria falsos positivos.
-      const isCanceled = cancelStatus.includes('❌') || 
-        cancelStatus.toUpperCase().includes('CANCELAMENTO REALIZADO') || 
-        source === 'Cancelados';
-      
       if (isCanceled) {
         canceledCount++;
         canceledList.push({
@@ -521,34 +560,32 @@ export default function Dashboard() {
           </div>
 
           <div className="flex flex-col sm:flex-row items-end sm:items-center gap-4">
-            {activeTab === 'geral' && (
-              <div className="flex items-center bg-white/5 border border-white/10 rounded-xl p-1 backdrop-blur-xl h-11">
-                <div className="pl-3 pr-2 flex items-center text-zinc-400">
-                  <Calendar className="w-4 h-4" />
-                </div>
-                <input
-                  type="date"
-                  value={startDate}
-                  onChange={(e) => setStartDate(e.target.value)}
-                  className="bg-transparent text-sm text-zinc-300 px-2 py-1 outline-none [color-scheme:dark] rounded-lg transition-colors hover:bg-white/5 focus:bg-white/10 border border-transparent focus:border-amber-500/50"
-                />
-                <span className="text-zinc-500 px-2 text-xs font-medium">até</span>
-                <input
-                  type="date"
-                  value={endDate}
-                  onChange={(e) => setEndDate(e.target.value)}
-                  className="bg-transparent text-sm text-zinc-300 px-2 py-1 outline-none [color-scheme:dark] rounded-lg transition-colors hover:bg-white/5 focus:bg-white/10 border border-transparent focus:border-amber-500/50"
-                />
-                {(startDate || endDate) && (
-                  <button
-                    onClick={() => { setStartDate(''); setEndDate(''); }}
-                    className="ml-2 mr-1 px-2 py-1 bg-red-500/10 hover:bg-red-500/20 text-red-400 text-xs rounded-md transition-colors font-medium border border-red-500/10"
-                  >
-                    Limpar
-                  </button>
-                )}
+            <div className="flex items-center bg-white/5 border border-white/10 rounded-xl p-1 backdrop-blur-xl h-11">
+              <div className="pl-3 pr-2 flex items-center text-zinc-400">
+                <Calendar className="w-4 h-4" />
               </div>
-            )}
+              <input
+                type="date"
+                value={startDate}
+                onChange={(e) => setStartDate(e.target.value)}
+                className="bg-transparent text-sm text-zinc-300 px-2 py-1 outline-none [color-scheme:dark] rounded-lg transition-colors hover:bg-white/5 focus:bg-white/10 border border-transparent focus:border-amber-500/50"
+              />
+              <span className="text-zinc-500 px-2 text-xs font-medium">até</span>
+              <input
+                type="date"
+                value={endDate}
+                onChange={(e) => setEndDate(e.target.value)}
+                className="bg-transparent text-sm text-zinc-300 px-2 py-1 outline-none [color-scheme:dark] rounded-lg transition-colors hover:bg-white/5 focus:bg-white/10 border border-transparent focus:border-amber-500/50"
+              />
+              {(startDate || endDate) && (
+                <button
+                  onClick={() => { setStartDate(''); setEndDate(''); }}
+                  className="ml-2 mr-1 px-2 py-1 bg-red-500/10 hover:bg-red-500/20 text-red-400 text-xs rounded-md transition-colors font-medium border border-red-500/10"
+                >
+                  Limpar
+                </button>
+              )}
+            </div>
 
             <button onClick={() => window.location.reload()} className="group relative inline-flex h-11 items-center justify-center overflow-hidden rounded-xl bg-amber-500 px-6 font-medium text-black transition-all hover:bg-amber-400 shrink-0 shadow-lg shadow-amber-500/20">
               <TrendingUp className="w-4 h-4 mr-2" />
@@ -891,7 +928,7 @@ export default function Dashboard() {
                   <div className="text-3xl font-bold text-white tracking-tight">
                     {new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(recoveredRevenue)}
                   </div>
-                  <p className="text-xs text-zinc-500 mt-2 font-medium">No mês atual</p>
+                  <p className="text-xs text-zinc-500 mt-2 font-medium">{startDate || endDate ? 'No período selecionado' : 'No mês atual'}</p>
                 </div>
 
                 <div className="relative overflow-hidden bg-white/5 border border-white/10 rounded-2xl p-6 backdrop-blur-xl group hover:bg-white/[0.07] transition-colors">
@@ -904,7 +941,7 @@ export default function Dashboard() {
                   <div className="text-3xl font-bold text-white tracking-tight">
                     {canceledClientsCount}
                   </div>
-                  <p className="text-xs text-zinc-500 mt-2 font-medium">No mês atual</p>
+                  <p className="text-xs text-zinc-500 mt-2 font-medium">{startDate || endDate ? 'No período selecionado' : 'No mês atual'}</p>
                 </div>
 
                 <div className="relative overflow-hidden bg-white/5 border border-white/10 rounded-2xl p-6 backdrop-blur-xl group hover:bg-white/[0.07] transition-colors">
@@ -1049,7 +1086,7 @@ export default function Dashboard() {
                 <div className="mb-6">
                   <h3 className="text-lg font-bold text-white flex items-center gap-2">
                     <CheckCircle2 className="w-5 h-5 text-emerald-500" />
-                    Clientes Recuperados no Mês
+                    Clientes Recuperados {startDate || endDate ? 'no Período' : 'no Mês'}
                   </h3>
                   <p className="text-sm text-zinc-400">Clientes que regularizaram suas pendências.</p>
                 </div>
@@ -1095,9 +1132,9 @@ export default function Dashboard() {
                 <div className="mb-6">
                   <h3 className="text-lg font-bold text-white flex items-center gap-2">
                     <AlertTriangle className="w-5 h-5 text-zinc-400" />
-                    Clientes Cancelados no Mês
+                    Clientes Cancelados {startDate || endDate ? 'no Período' : 'no Mês'}
                   </h3>
-                  <p className="text-sm text-zinc-400">Contratos encerrados no período atual.</p>
+                  <p className="text-sm text-zinc-400">Contratos encerrados {startDate || endDate ? 'no período selecionado' : 'no período atual'}.</p>
                 </div>
                 <div className="overflow-x-auto max-h-[400px] overflow-y-auto pr-2 [&::-webkit-scrollbar]:w-2 [&::-webkit-scrollbar-track]:bg-transparent [&::-webkit-scrollbar-thumb]:bg-white/10 [&::-webkit-scrollbar-thumb]:rounded-full">
                   <table className="w-full text-left border-collapse">
