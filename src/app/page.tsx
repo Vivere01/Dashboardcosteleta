@@ -312,8 +312,11 @@ export default function Dashboard() {
       // que pode conflitar com coluna STATUS: da aba geral
       const statusKey = colNames.find(k => {
         const s = k.toUpperCase();
-        return s.includes('REGULARIZADO') || s.includes('REGURALIZADO');
-      }) || colNames[6] || '';
+        // Deve conter REGULARIZADO mas NÃO ser uma coluna de DATA
+        return (s.includes('REGULARIZADO') || s.includes('REGURALIZADO')) && 
+               !(s.includes('DATA') || s.includes('EM') || s.includes('DIA'));
+      }) || colNames.find(k => k.toUpperCase().includes('REGULARIZA')) 
+         || colNames[6] || '';
 
       const cancelKey = colNames.find(k => {
         const s = k.toUpperCase();
@@ -373,8 +376,14 @@ export default function Dashboard() {
       // Identify columns for payment/cancellation dates (if the user creates them in the spreadsheet)
       const paymentDateKey = colNames.find(k => {
         const up = k.toUpperCase();
-        return up.includes('PAGAMENTO') || up.includes('REGULARIZA');
-      }) || '';
+        // Caso 1: Tem "PAGAMENTO" ou "REGULARIZA" E algo que indique data/momento
+        return (up.includes('PAGAMENTO') || up.includes('REGULARIZA')) && 
+               (up.includes('DATA') || up.includes('EM') || up.includes('DIA') || up.includes('QUANDO'));
+      }) || colNames.find(k => {
+        const up = k.toUpperCase();
+        // Caso 2: Contém REGULARIZADO mas NÃO é o statusKey
+        return up.includes('REGULARIZA') && k !== statusKey;
+      }) || colNames.find(k => k.toUpperCase().includes('PAGAMENTO')) || '';
       const cancelDateKey = colNames.find(k => k.toUpperCase().includes('CANCELAMENTO') && k.toUpperCase().includes('DATA')) || '';
 
       const dueDateRaw = (row[dueKey] || '') as string;
